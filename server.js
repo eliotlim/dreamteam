@@ -6,7 +6,7 @@ var socketIO = require('socket.io');
 
 // Local dependencies
 var rand = require('./lib/rand.js');
-
+var game = require('./lib/dreamteam.js');
 
 var app = express();
 var server = http.Server(app);
@@ -46,9 +46,14 @@ function newSession(socket) {
         console.log(username + " disconnected");
     });
 
-
     var promptCount = 0;
     setInterval(function() {
         socket.emit('prompt', 'Prompt #' + promptCount++);
+        socket.emit('clearallcontrol');
+        socket.emit('setupcontrol', new game.Control());
     }, 2000);
+
+    socket.on('action', function(data) {
+        console.log(data);
+    })
 }

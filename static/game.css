@@ -22,6 +22,10 @@ body {
     background-color: black;
     color: white;
     padding-top: 5mm;
+    padding-bottom: 5mm;
     width: 90%;
-    height: 10mm;
+}
+
+.card {
+    width: 18rem;
 }

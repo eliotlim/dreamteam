@@ -26,6 +26,10 @@ body {
     width: 90%;
 }
 
+.control-panel-wrapper {
+    padding: 5mm;
+}
+
 .card {
     width: 18rem;
 }

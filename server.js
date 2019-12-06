@@ -49,7 +49,7 @@ function newSession(socket) {
     var promptCount = 0;
     setInterval(function() {
         socket.emit('prompt', 'Prompt #' + promptCount++);
-        socket.emit('clearallcontrol');
+        if (promptCount % 7 == 0) socket.emit('clearallcontrol');
         socket.emit('setupcontrol', new game.Control());
     }, 2000);
 

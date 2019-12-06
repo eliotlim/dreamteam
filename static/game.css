@@ -1,0 +1,27 @@
+body {
+    font-family: 'Ubuntu Mono', 'Consolas';
+}
+
+.timer-wrapper {
+    text-align: center;
+}
+
+.timer {
+    display: inline-block;
+    padding-top: 5mm;
+    padding-bottom: 5mm;
+}
+
+.prompt-wrapper {
+    text-align: center;
+}
+
+.prompt {
+    display: inline-block;
+    text-align: center;
+    background-color: black;
+    color: white;
+    padding-top: 5mm;
+    width: 90%;
+    height: 10mm;
+}

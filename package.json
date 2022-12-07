@@ -17,7 +17,7 @@
   },
   "homepage": "https://github.com/eliotlim/dreamteam#readme",
   "dependencies": {
-    "express": "^4.17.1",
+    "express": "^4.18.2",
     "react": "^16.12.0",
     "socket.io": "^2.3.0"
   }

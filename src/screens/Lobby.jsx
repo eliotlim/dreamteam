@@ -185,6 +185,11 @@ export default function Lobby() {
                 checked={cfg.botChatter} onChange={(on) => setConfig({ botChatter: on })} />
               <ToggleSetting label="Mega mode" desc="crowd play: dials are duplicated across screens and missions need a quorum of teammates"
                 checked={!!cfg.megaMode} onChange={(on) => setConfig({ megaMode: on })} />
+              {activeCount > 6 && !cfg.megaMode && (
+                <p className="text-xs text-accent py-2">
+                  👥 {activeCount} players — that's a crowd. Mega mode was made for this.
+                </p>
+              )}
             </div>
 
             <button

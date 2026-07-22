@@ -11,6 +11,22 @@ import Chat from '../panels/Chat.jsx';
 import Obs, { MetricsGrid } from '../panels/Obs.jsx';
 import Infra from '../panels/Infra.jsx';
 
+// When the tab is backgrounded, surface pending work in the title bar so
+// cross-play players flipping between apps see they're needed.
+function useAttentionTitle(count) {
+  useEffect(() => {
+    const update = () => {
+      document.title = document.hidden && count > 0 ? `(${count}) 🚨 DreamTeam` : 'DreamTeam';
+    };
+    update();
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      document.removeEventListener('visibilitychange', update);
+      document.title = 'DreamTeam';
+    };
+  }, [count]);
+}
+
 function useIsDesktop() {
   const [is, setIs] = useState(() => matchMedia('(min-width: 1024px)').matches);
   useEffect(() => {
@@ -323,6 +339,8 @@ export default function Game() {
   const desktop = useIsDesktop();
   const me = s.g.players[s.you];
   const spectator = !me || me.role === 'spectator';
+  const myWork = s.g.tasks.filter((t) => t.displayPid === s.you).length + (s.g.incident ? 1 : 0);
+  useAttentionTitle(spectator ? 0 : myWork);
 
   return (
     <div className="h-full flex flex-col overflow-hidden">

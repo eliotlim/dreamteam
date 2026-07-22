@@ -675,7 +675,7 @@ export class GameRoom extends DurableObject {
     const effReplicas = Math.max(1, replicas - sim.crashedPods);
     const cacheFactor = has('cache') ? 1 + 0.06 * cacheTtl * sim.cacheWarmth : 1;
     const cdnFactor = has('cdn') ? 1.1 : 1;
-    const coldRegion = sim.dnsSwitchedAt && now - sim.dnsSwitchedAt < 16000;
+    const coldRegion = sim.dnsSwitchedAt && now - sim.dnsSwitchedAt < INCIDENT_TUNING.dnsTtlMs * 2;
     const capacity = effReplicas * PER_REPLICA_RPS * cacheFactor * cdnFactor
       * (1 - sim.leak) * (coldRegion ? 0.75 : 1);
     sim.util = sim.rps / capacity;

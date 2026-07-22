@@ -101,7 +101,7 @@ function CodeMissionCard({ task, now, isEngineer }) {
               onClick={() => tap(i)}
               className={cx(
                 'w-full text-left px-2.5 py-px flex items-center gap-2 cursor-pointer whitespace-pre',
-                'hover:bg-accent-soft transition-colors',
+                'hover:bg-accent-soft transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
                 wrong === i && 'bg-danger-soft animate-shake',
               )}
             >
@@ -161,6 +161,7 @@ function TriageMissionCard({ task, now, isPm }) {
             className={cx(
               'px-2 py-1.5 rounded-lg border text-xs font-medium text-left cursor-pointer transition-colors',
               'border-line hover:bg-accent-soft hover:border-accent/40',
+              'outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
               wrong === i && 'bg-danger-soft border-danger animate-shake',
             )}
           >

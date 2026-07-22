@@ -329,6 +329,48 @@ export const CODE_SNIPPETS = [
     ],
     bug: 2, why: 'pop() takes the newest job (LIFO) — FIFO needs shift().',
   },
+  {
+    id: 'last-week', name: 'metrics.js',
+    lines: [
+      '// the last 7 days of data points, oldest first',
+      'function lastWeek(points) {',
+      '  return points.slice(-8);',
+      '}',
+    ],
+    bug: 2, why: 'slice(-8) returns eight days, not seven.',
+  },
+  {
+    id: 'abort-ms', name: 'client.js',
+    lines: [
+      '// abort the request after 30 seconds',
+      'const ctl = new AbortController();',
+      'setTimeout(() => ctl.abort(), 30);',
+      'fetch(url, { signal: ctl.signal });',
+    ],
+    bug: 2, why: 'setTimeout takes milliseconds — 30 aborts after 30ms, not 30s.',
+  },
+  {
+    id: 'cache-evict', name: 'session.js',
+    lines: [
+      "// clear this user's cache entries on logout",
+      'function logout(cache, userId) {',
+      '  for (const key of cache.keys()) {',
+      "    if (key.startsWith('user:')) cache.delete(key);",
+      '  }',
+      '}',
+    ],
+    bug: 3, why: "startsWith('user:') nukes EVERY user's entries — needs `user:${userId}`.",
+  },
+  {
+    id: 'semver-sort', name: 'releases.js',
+    lines: [
+      '// sort release versions ascending (1.2.0 < 10.0.0)',
+      'function sortVersions(vs) {',
+      '  return vs.sort();',
+      '}',
+    ],
+    bug: 2, why: "Default sort is lexicographic: '10.0.0' lands before '9.0.0'.",
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -354,6 +396,10 @@ export const TRIAGE_TICKETS = [
   { kind: 'request', from: 'support', text: "Trial user: 'the onboarding tour never finishes, I can't use the product at all.'", answer: 1, why: 'Blocks new-user activation — high priority, not a page.' },
   { kind: 'request', from: 'support', text: "Biggest customer's renewal is blocked on the audit-log feature promised last quarter.", answer: 1, why: 'Revenue-critical commitment — schedule it now; nothing is down.' },
   { kind: 'request', from: 'support', text: "Anonymous email: 'your API keys are visible in the page source.'", answer: 0, why: 'Credible security report — treat as an incident and page.' },
+  { kind: 'bug', from: 'support', text: 'Two customers confirmed they were double-charged when a payment retried.', answer: 0, why: 'Actively taking people\'s money twice — page it now.' },
+  { kind: 'bug', from: 'support', text: 'Exports time out for accounts with more than 10k rows. Three enterprise customers hit it daily.', answer: 1, why: 'Painful and recurring for paying customers — but nothing is down.' },
+  { kind: 'request', from: 'support', text: 'One free-tier user wants Comic Sans as a font option.', answer: 3, why: 'No. (Politely.)' },
+  { kind: 'request', from: 'support', text: 'Sales: tomorrow\'s demo for our biggest prospect needs the SSO flag enabled — it\'s built and tested.', answer: 1, why: 'Time-boxed revenue opportunity, zero outage — schedule it immediately.' },
 ];
 
 // ---------------------------------------------------------------------------

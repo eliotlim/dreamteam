@@ -43,6 +43,7 @@ export default function Retro() {
                     <th className="text-left font-semibold py-1">Sprint</th>
                     <th className="text-right font-semibold">Shipped</th>
                     <th className="text-right font-semibold">Bugs</th>
+                    <th className="text-right font-semibold">Triaged</th>
                     <th className="text-right font-semibold">Incidents</th>
                     <th className="text-right font-semibold">Points</th>
                   </tr>
@@ -53,6 +54,7 @@ export default function Retro() {
                       <td className="py-1.5">Sprint {sp.sprint}</td>
                       <td className="text-right">{sp.shipped}</td>
                       <td className="text-right">{sp.bugsFixed}</td>
+                      <td className="text-right">{sp.triaged ?? 0}</td>
                       <td className="text-right">{sp.incidentsResolved}</td>
                       <td className="text-right font-semibold text-accent">+{sp.scoreDelta}</td>
                     </tr>

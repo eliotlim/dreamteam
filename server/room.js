@@ -219,6 +219,30 @@ export class GameRoom extends DurableObject {
       if (orphaned.length) {
         this.botSay('system', `${p.name} stepped away — ${orphaned.length} task(s) reassigned to the void.`);
       }
+      const remaining = this.activePlayers();
+      if (remaining.length) {
+        // the ops console must never freeze: hand crit dials to someone present
+        const crits = p.controls.filter((c) => c.crit);
+        if (crits.length) {
+          const heir = [...remaining].sort((a, b) => a.controls.length - b.controls.length)[0];
+          heir.controls.push(...crits);
+          p.controls = p.controls.filter((c) => !c.crit);
+          this.botSay('system', `${p.name}'s ops controls were handed to ${heir.name} 🎛️`);
+        }
+        // shrink quorums that lost a holder so missions stay winnable
+        for (const t of this.g.tasks.filter((t) => t.quorum)) {
+          const holders = remaining.filter(
+            (pl) => pl.controls.some((c) => c.key === t.controlKey),
+          ).length;
+          if (holders === 0) { this.finishTask(t, 'cancelled'); continue; }
+          if (t.quorum.required > holders) {
+            t.quorum.required = holders;
+            t.quorum.holders = holders;
+            if (t.quorum.have >= t.quorum.required) { this.completeTask(t); continue; }
+            this.broadcast({ t: 'task', task: t });
+          }
+        }
+      }
     }
     this.persist();
     this.broadcast({ t: 'players', players: this.publicPlayers() });

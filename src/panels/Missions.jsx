@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { GUESS_PENALTY, MODES } from '../../shared/content.js';
 import { Card, Badge, Progress, Skeleton, Button, cx } from '../components/ui.jsx';
 import { useNow } from '../lib/hooks.js';
 import { useStore } from '../lib/store.js';
@@ -17,18 +18,41 @@ const CODE_META = {
 
 const SLOT_H = 'h-[128px]';
 
-function Deadline({ task, now }) {
-  const total = task.deadlineAt - task.createdAt;
-  const left = task.deadlineAt - now;
-  const urgent = left < total * 0.3;
-  return {
-    left, urgent, pct: (left / total) * 100,
-    node: (
-      <span className={cx('text-xs font-bold tabular-nums w-8 text-right', urgent ? 'text-danger' : 'text-faint')}>
-        {Math.max(0, Math.ceil(left / 1000))}s
-      </span>
-    ),
+function timeInfo(start, end, now) {
+  const total = end - start;
+  const left = end - now;
+  return { left, pct: (left / total) * 100, urgent: left < total * 0.3 };
+}
+
+function TimeLeft({ left, urgent }) {
+  return (
+    <span className={cx('text-xs font-bold tabular-nums w-8 text-right', urgent ? 'text-danger' : 'text-faint')}>
+      {Math.max(0, Math.ceil(left / 1000))}s
+    </span>
+  );
+}
+
+// wrong-pick feedback: briefly flags the tapped option so it can shake red
+function useWrongFlash() {
+  const [wrong, setWrong] = useState(null);
+  const flash = (i) => {
+    setWrong(i);
+    setTimeout(() => setWrong(null), 450);
   };
+  return [wrong, flash];
+}
+
+function PenaltyFooter({ t, tone, wrongGuesses }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <Progress value={t.pct} tone={t.urgent ? 'danger' : tone} className="flex-1" />
+      {wrongGuesses > 0 && (
+        <span className="text-[10px] font-semibold text-danger whitespace-nowrap">
+          {wrongGuesses}✗ · −{GUESS_PENALTY.secs}s each
+        </span>
+      )}
+    </div>
+  );
 }
 
 function QuorumDots({ quorum }) {
@@ -46,20 +70,20 @@ function QuorumDots({ quorum }) {
 
 function MissionCard({ task, now }) {
   const meta = KIND_META[task.kind];
-  const d = Deadline({ task, now });
+  const t = timeInfo(task.createdAt, task.deadlineAt, now);
 
   return (
-    <Card className={cx(SLOT_H, 'p-3.5 flex flex-col justify-between animate-pop', d.urgent && 'border-danger/50')}>
+    <Card className={cx(SLOT_H, 'p-3.5 flex flex-col justify-between animate-pop', t.urgent && 'border-danger/50')}>
       <div className="flex items-center justify-between gap-2">
         <Badge tone={meta.tone}>{meta.icon} {meta.label}{task.epicService ? ' · EPIC' : ''}</Badge>
-        {d.node}
+        <TimeLeft {...t} />
       </div>
       <div className="min-h-0">
         <div className="text-xs text-subtle truncate" title={task.title}>{task.title}</div>
         <div className="text-[15px] font-semibold leading-snug line-clamp-2">{task.instr}</div>
       </div>
       <div className="flex items-center gap-2">
-        <Progress value={d.pct} tone={d.urgent ? 'danger' : meta.tone} className="flex-1" />
+        <Progress value={t.pct} tone={t.urgent ? 'danger' : meta.tone} className="flex-1" />
         {task.quorum && <QuorumDots quorum={task.quorum} />}
       </div>
     </Card>
@@ -68,23 +92,20 @@ function MissionCard({ task, now }) {
 
 // Find-the-bug code review. Engineers get a lens that marks the buggy line.
 function CodeMissionCard({ task, now, isEngineer }) {
-  const [wrong, setWrong] = useState(null);
+  const [wrong, flash] = useWrongFlash();
   const meta = CODE_META[task.codeKind] || CODE_META.feature;
-  const d = Deadline({ task, now });
+  const t = timeInfo(task.createdAt, task.deadlineAt, now);
 
   const tap = (i) => {
     guessCodeLine(task.id, i);
-    if (i !== task.bugLine) {
-      setWrong(i);
-      setTimeout(() => setWrong(null), 450);
-    }
+    if (i !== task.bugLine) flash(i);
   };
 
   return (
-    <Card className={cx('p-3.5 space-y-2 animate-pop', d.urgent && 'border-danger/50')}>
+    <Card className={cx('p-3.5 space-y-2 animate-pop', t.urgent && 'border-danger/50')}>
       <div className="flex items-center justify-between gap-2">
         <Badge tone="info">👨‍💻 {meta.label}{task.epicService ? ' · EPIC' : ''}</Badge>
-        {d.node}
+        <TimeLeft {...t} />
       </div>
       <div>
         <div className="text-[15px] font-semibold leading-snug">{meta.icon} {task.title}</div>
@@ -114,38 +135,28 @@ function CodeMissionCard({ task, now, isEngineer }) {
           ))}
         </div>
       </div>
-      <div className="flex items-center justify-between gap-2">
-        <Progress value={d.pct} tone={d.urgent ? 'danger' : 'info'} className="flex-1" />
-        {task.wrongGuesses > 0 && (
-          <span className="text-[10px] font-semibold text-danger whitespace-nowrap">
-            {task.wrongGuesses}✗ · −4s each
-          </span>
-        )}
-      </div>
+      <PenaltyFooter t={t} tone="info" wrongGuesses={task.wrongGuesses} />
     </Card>
   );
 }
 
 // Ticket triage — route it to the right priority. PMs get an instinct marker.
 function TriageMissionCard({ task, now, isPm }) {
-  const [wrong, setWrong] = useState(null);
-  const d = Deadline({ task, now });
+  const [wrong, flash] = useWrongFlash();
+  const t = timeInfo(task.createdAt, task.deadlineAt, now);
 
   const tap = (i) => {
     pickTriage(task.id, i);
-    if (i !== task.answer) {
-      setWrong(i);
-      setTimeout(() => setWrong(null), 450);
-    }
+    if (i !== task.answer) flash(i);
   };
 
   return (
-    <Card className={cx('p-3.5 space-y-2 animate-pop', d.urgent && 'border-danger/50')}>
+    <Card className={cx('p-3.5 space-y-2 animate-pop', t.urgent && 'border-danger/50')}>
       <div className="flex items-center justify-between gap-2">
         <Badge tone={task.triageKind === 'bug' ? 'warn' : 'accent'}>
           📥 {task.triageKind === 'bug' ? 'TRIAGE · BUG REPORT' : 'TRIAGE · REQUEST'}
         </Badge>
-        {d.node}
+        <TimeLeft {...t} />
       </div>
       <div className="text-sm leading-snug bg-raised border border-line rounded-lg px-2.5 py-2">
         <span className="text-faint">🎧 </span>“{task.ticketText}”
@@ -170,14 +181,7 @@ function TriageMissionCard({ task, now, isPm }) {
           </button>
         ))}
       </div>
-      <div className="flex items-center justify-between gap-2">
-        <Progress value={d.pct} tone={d.urgent ? 'danger' : 'accent'} className="flex-1" />
-        {task.wrongGuesses > 0 && (
-          <span className="text-[10px] font-semibold text-danger whitespace-nowrap">
-            {task.wrongGuesses}✗ · −4s each
-          </span>
-        )}
-      </div>
+      <PenaltyFooter t={t} tone="accent" wrongGuesses={task.wrongGuesses} />
     </Card>
   );
 }
@@ -191,15 +195,14 @@ export function IncidentCard({ incident, now, compact = false }) {
       </Card>
     );
   }
-  const total = incident.deadlineAt - incident.startedAt;
-  const left = incident.deadlineAt - now;
+  const t = timeInfo(incident.startedAt, incident.deadlineAt, now);
   const realism = !incident.goal;
   return (
     <Card className="p-3.5 space-y-2 border-danger bg-danger-soft animate-pulse-danger">
       <div className="flex items-center justify-between gap-2">
         <Badge tone="danger" className="animate-blink">🚨 {realism ? 'PAGER' : 'INCIDENT'}</Badge>
         <span className="text-xs font-bold tabular-nums text-danger">
-          {Math.max(0, Math.ceil(left / 1000))}s
+          {Math.max(0, Math.ceil(t.left / 1000))}s
         </span>
       </div>
       <div>
@@ -225,10 +228,10 @@ export function IncidentCard({ incident, now, compact = false }) {
       )}
       {incident.hintAvailable && !incident.hint && !compact && (
         <Button size="sm" variant="outline" className="w-full" onClick={requestHint}>
-          💡 Pull up the runbook (−25 pts)
+          💡 Pull up the runbook (−{MODES.assisted.hintCost} pts)
         </Button>
       )}
-      <Progress value={(left / total) * 100} tone="danger" />
+      <Progress value={t.pct} tone="danger" />
     </Card>
   );
 }

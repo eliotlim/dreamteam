@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
   ROLES, CRITICAL_CONTROLS, CONTROL_POOL, FEATURES, BUGS, INCIDENTS, MODES,
-  CODE_SNIPPETS, TRIAGE_TICKETS, TRIAGE_OPTIONS,
+  CODE_SNIPPETS, TRIAGE_TICKETS, TRIAGE_OPTIONS, GUESS_PENALTY, INCIDENT_TUNING,
   SERVICES, CORE_SERVICES, EPIC_FEATURES, REGIONS, AMBIENT_LOGS, SERVICE_LOGS,
   TRACE_ROUTES, BOTS, CEO_SPRINT_LINES, CEO_INCIDENT_LINES, instructionFor,
   NAME_ADJECTIVES, NAME_NOUNS,
@@ -65,14 +65,24 @@ const shuffle = (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const uid = () => crypto.randomUUID().slice(0, 8);
 
+// Incident-transient sim fields — reset together when a sprint starts or an
+// incident ends. trafficMult and cacheWarmth are excluded: they decay/rebuild
+// naturally and have per-site rules.
+const INCIDENT_SIM_RESET = {
+  crashedPods: 0, paymentsUp: true, failedRegion: null, dnsSwitchedAt: null,
+  leak: 0, leakFixed: false, badDeploy: false, dbCorrupt: false, restoring: 0,
+};
+
 function freshSim() {
   return {
     rps: 90, util: 0.7, err: 0.5, p95: 160, queueDepth: 12, dbIops: 150,
-    crashedPods: 0, trafficMult: 1, paymentsUp: true, failedRegion: null,
-    leak: 0, leakFixed: false, cacheWarmth: 1, badDeploy: false,
-    dbCorrupt: false, restoring: 0, dnsSwitchedAt: null,
-    stableTicks: 0,
+    trafficMult: 1, cacheWarmth: 1, stableTicks: 0,
+    ...INCIDENT_SIM_RESET,
   };
+}
+
+function freshStats() {
+  return { shipped: 0, bugsFixed: 0, incidentsResolved: 0, triaged: 0, missed: 0, sprints: [] };
 }
 
 function freshState(code) {
@@ -99,7 +109,7 @@ function freshState(code) {
     metrics: [],
     nodes: {},
     sim: freshSim(),
-    stats: { shipped: 0, bugsFixed: 0, incidentsResolved: 0, triaged: 0, missed: 0, sprints: [] },
+    stats: freshStats(),
     sprintStats: null,
     usedSnippets: [],
     usedTickets: [],
@@ -224,7 +234,7 @@ export class GameRoom extends DurableObject {
         // the ops console must never freeze: hand crit dials to someone present
         const crits = p.controls.filter((c) => c.crit);
         if (crits.length) {
-          const heir = [...remaining].sort((a, b) => a.controls.length - b.controls.length)[0];
+          const heir = this.leastLoaded(remaining)[0];
           heir.controls.push(...crits);
           p.controls = p.controls.filter((c) => !c.crit);
           this.botSay('system', `${p.name}'s ops controls were handed to ${heir.name} 🎛️`);
@@ -297,33 +307,11 @@ export class GameRoom extends DurableObject {
         break;
       }
       case 'code_guess': {
-        if (g.phase !== 'playing') break;
-        const task = g.tasks.find((x) => x.id === msg.taskId && x.kind === 'code');
-        if (!task || task.displayPid !== p.id) break;
-        if (Number(msg.line) === task.bugLine) {
-          this.completeTask(task);
-        } else {
-          task.wrongGuesses = (task.wrongGuesses ?? 0) + 1;
-          task.deadlineAt -= 4000;
-          g.score = Math.max(0, g.score - 10);
-          this.broadcast({ t: 'task', task });
-        }
-        this.persist();
+        this.answerTask(p, msg.taskId, 'code', (task) => Number(msg.line) === task.bugLine);
         break;
       }
       case 'triage_pick': {
-        if (g.phase !== 'playing') break;
-        const task = g.tasks.find((x) => x.id === msg.taskId && x.kind === 'triage');
-        if (!task || task.displayPid !== p.id) break;
-        if (Number(msg.choice) === task.answer) {
-          this.completeTask(task);
-        } else {
-          task.wrongGuesses = (task.wrongGuesses ?? 0) + 1;
-          task.deadlineAt -= 4000;
-          g.score = Math.max(0, g.score - 10);
-          this.broadcast({ t: 'task', task });
-        }
-        this.persist();
+        this.answerTask(p, msg.taskId, 'triage', (task) => Number(msg.choice) === task.answer);
         break;
       }
       case 'hint': {
@@ -397,6 +385,24 @@ export class GameRoom extends DurableObject {
     }
   }
 
+  // Quiz-style missions (code review, triage): right answer completes,
+  // wrong answers share one penalty policy.
+  answerTask(p, taskId, kind, isCorrect) {
+    const g = this.g;
+    if (g.phase !== 'playing') return;
+    const task = g.tasks.find((x) => x.id === taskId && x.kind === kind);
+    if (!task || task.displayPid !== p.id) return;
+    if (isCorrect(task)) {
+      this.completeTask(task);
+    } else {
+      task.wrongGuesses = (task.wrongGuesses ?? 0) + 1;
+      task.deadlineAt -= GUESS_PENALTY.secs * 1000;
+      g.score = Math.max(0, g.score - GUESS_PENALTY.points);
+      this.broadcast({ t: 'task', task });
+    }
+    this.persist();
+  }
+
   // ------------------------------------------------------------- controls helpers
 
   findControl(key) {
@@ -437,7 +443,7 @@ export class GameRoom extends DurableObject {
     g.traces = [];
     g.metrics = [];
     g.sim = freshSim();
-    g.stats = { shipped: 0, bugsFixed: 0, incidentsResolved: 0, triaged: 0, missed: 0, sprints: [] };
+    g.stats = freshStats();
     g.usedSnippets = [];
     g.usedTickets = [];
     this.buildBacklog();
@@ -458,39 +464,35 @@ export class GameRoom extends DurableObject {
     g.backlog = out;
   }
 
+  leastLoaded(players) {
+    return [...players].sort((a, b) => a.controls.length - b.controls.length);
+  }
+
   dealAllControls() {
     const players = this.activePlayers();
     const cfg = this.g.config;
     for (const p of players) p.controls = [];
-    const byLoad = () => [...players].sort((a, b) => a.controls.length - b.controls.length);
     for (const def of shuffle(CRITICAL_CONTROLS)) {
-      const match = byLoad().find((p) => p.role === def.role);
-      (match || byLoad()[0]).controls.push(this.instantiate(def, true));
+      const byLoad = this.leastLoaded(players);
+      (byLoad.find((p) => p.role === def.role) || byLoad[0]).controls.push(this.instantiate(def, true));
     }
     if (cfg.megaMode) {
-      // mega mode: deal a small set of pool dials round-robin so every dial
-      // lives on multiple screens — missions then demand a quorum of holders.
+      // mega mode: deal a small set of pool dials so every dial lives on
+      // multiple screens — missions then demand a quorum of holders.
       // Bigger crowds get more copies per dial so quorums feel like a crowd.
       const slots = players.reduce(
         (n, p) => n + Math.max(0, cfg.controlsPerPlayer - p.controls.length), 0);
       const copies = clamp(Math.round(players.length / 4) + 1, 2, 6);
       const nKeys = clamp(Math.ceil(slots / copies), 2, CONTROL_POOL.length);
       const chosen = shuffle(CONTROL_POOL).slice(0, nKeys);
-      let ci = 0;
-      let progress = true;
-      while (progress) {
-        progress = false;
-        for (const p of byLoad()) {
-          if (p.controls.length >= cfg.controlsPerPlayer) continue;
-          for (let k = 0; k < chosen.length; k++) {
-            const def = chosen[(ci + k) % chosen.length];
-            if (p.controls.some((c) => c.key === def.key)) continue;
-            p.controls.push(this.instantiate(def, false));
-            ci = (ci + k + 1) % chosen.length;
-            progress = true;
-            break;
-          }
-        }
+      // flat deck of repeated dials, each card dealt to the least-loaded
+      // player who can still take it
+      const deck = shuffle(Array.from({ length: slots }, (_, i) => chosen[i % chosen.length]));
+      for (const def of deck) {
+        const p = this.leastLoaded(players).find(
+          (pl) => pl.controls.length < cfg.controlsPerPlayer && !pl.controls.some((c) => c.key === def.key),
+        );
+        if (p) p.controls.push(this.instantiate(def, false));
       }
       return;
     }
@@ -554,17 +556,7 @@ export class GameRoom extends DurableObject {
     g.sprintStats = { shipped: 0, bugsFixed: 0, incidentsResolved: 0, triaged: 0, missed: 0, scoreStart: g.score };
     g.tasks = [];
     g.incident = null;
-    g.sim.trafficMult = 1;
-    g.sim.crashedPods = 0;
-    g.sim.paymentsUp = true;
-    g.sim.failedRegion = null;
-    g.sim.dnsSwitchedAt = null;
-    g.sim.leak = 0;
-    g.sim.leakFixed = false;
-    g.sim.badDeploy = false;
-    g.sim.dbCorrupt = false;
-    g.sim.restoring = 0;
-    g.sim.cacheWarmth = 1;
+    Object.assign(g.sim, INCIDENT_SIM_RESET, { trafficMult: 1, cacheWarmth: 1 });
     if (n > 1) g.health = clamp(g.health + 10, 0, 100);
     g.nextTaskAt = now + 3000;
     g.nextIncidentAt = now + (g.config.incidentEverySec * 1000) / this.ramp();
@@ -704,7 +696,7 @@ export class GameRoom extends DurableObject {
     if (sim.badDeploy) { err += 18; p95 += 120; }          // broken build in prod
     if (sim.dbCorrupt) err += 22;                          // writes failing integrity checks
     else if (sim.restoring > 0) err += 8;                  // restore still in progress
-    if (inc?.kind === 'ddos' && firewall < 6) err += 5;    // junk auth traffic errors
+    if (inc?.kind === 'ddos' && firewall < INCIDENT_TUNING.firewallShed) err += 5; // junk auth errors
     const breakerOn = this.ctlVal('circuit_breaker') === 1;
     if (has('payments') && !sim.paymentsUp) {
       err += breakerOn ? 2 : 14;                           // fail fast vs timeouts
@@ -720,7 +712,7 @@ export class GameRoom extends DurableObject {
           sim.dnsSwitchedAt = now;
           this.botSay('system', '🌐 DNS record updated — waiting out TTL propagation…');
         }
-        if (now - sim.dnsSwitchedAt < 8000) { err += 12; p95 += 220; } // stale resolvers
+        if (now - sim.dnsSwitchedAt < INCIDENT_TUNING.dnsTtlMs) { err += 12; p95 += 220; } // stale resolvers
       }
     }
 
@@ -763,7 +755,7 @@ export class GameRoom extends DurableObject {
     };
     nodes.lb = {
       v: `${sim.rps} rps`,
-      s: sim.util > 1.2 || (g.incident?.kind === 'ddos' && this.ctlVal('firewall', 2) < 6) ? 'degraded' : 'ok',
+      s: sim.util > 1.2 || (g.incident?.kind === 'ddos' && this.ctlVal('firewall', 2) < INCIDENT_TUNING.firewallShed) ? 'degraded' : 'ok',
     };
     nodes.frontend = {
       v: `${sim.p95} ms p95`,
@@ -942,12 +934,7 @@ export class GameRoom extends DurableObject {
     if (!owners.length) return;
     const owner = owners[0];
     const control = pick(eligible(owner));
-
-    let target = 1;
-    if (control.type === 'toggle') target = control.value ? 0 : 1;
-    if (control.type === 'slider') { do { target = control.min + rnd(control.max - control.min + 1); } while (target === control.value); }
-    if (control.type === 'select') { do { target = rnd(control.options.length); } while (target === control.value); }
-
+    const target = this.rollTarget(control);
     const isBug = Math.random() < g.config.bugChance;
     const item = this.pickBacklogItem(isBug);
 
@@ -974,6 +961,32 @@ export class GameRoom extends DurableObject {
     }
   }
 
+  // A new value for a dial that differs from its current one.
+  rollTarget(control) {
+    let target = 1;
+    if (control.type === 'toggle') target = control.value ? 0 : 1;
+    if (control.type === 'slider') {
+      const min = control.min ?? 0;
+      do { target = min + rnd(control.max - min + 1); } while (target === control.value);
+    }
+    if (control.type === 'select') { do { target = rnd(control.options.length); } while (target === control.value); }
+    return target;
+  }
+
+  // Draw an unused item from a content pool, recycling the used-list when the
+  // pool runs dry. Mutates usedList in place.
+  drawFresh(pool, usedList, keyOf, inUseKeys) {
+    let avail = pool.filter((x) => !inUseKeys.has(keyOf(x)) && !usedList.includes(keyOf(x)));
+    if (!avail.length) {
+      usedList.length = 0;
+      avail = pool.filter((x) => !inUseKeys.has(keyOf(x)));
+    }
+    if (!avail.length) return null;
+    const item = pick(avail);
+    usedList.push(keyOf(item));
+    return item;
+  }
+
   // Mega-mode dial mission: the same dial lives on several screens and the
   // mission only completes once enough holders perform the action.
   spawnQuorumTask(displays) {
@@ -991,14 +1004,14 @@ export class GameRoom extends DurableObject {
     const [key, hs] = pick(candidates);
     const sample = hs[0].c;
 
-    let target = 1;
+    let target;
     if (sample.type === 'toggle') {
       // aim at whichever state the minority holds so it's never pre-satisfied
       const ones = hs.filter(({ c }) => c.value === 1).length;
       target = ones * 2 >= hs.length ? 0 : 1;
+    } else {
+      target = this.rollTarget(sample);
     }
-    if (sample.type === 'slider') { do { target = (sample.min ?? 0) + rnd(sample.max - (sample.min ?? 0) + 1); } while (target === sample.value); }
-    if (sample.type === 'select') { do { target = rnd(sample.options.length); } while (target === sample.value); }
 
     const required = Math.max(2, Math.ceil(hs.length * 0.6));
     const have = sample.type === 'button' ? 0 : hs.filter(({ c }) => c.value === target).length;
@@ -1017,7 +1030,7 @@ export class GameRoom extends DurableObject {
       quorum: { required, have, holders: hs.length },
       pressedBy: [],
       displayPid: display.id,
-      ownerPid: display.id,
+      ownerPid: null,
       ownerName: 'the crowd',
       controlKey: key,
       target,
@@ -1036,14 +1049,8 @@ export class GameRoom extends DurableObject {
   spawnCodeTask(displays) {
     const g = this.g;
     const inUse = new Set(g.tasks.filter((t) => t.kind === 'code').map((t) => t.snippetId));
-    let avail = CODE_SNIPPETS.filter((s) => !inUse.has(s.id) && !g.usedSnippets.includes(s.id));
-    if (!avail.length) {
-      g.usedSnippets = [];
-      avail = CODE_SNIPPETS.filter((s) => !inUse.has(s.id));
-    }
-    if (!avail.length) return false;
-    const snippet = pick(avail);
-    g.usedSnippets.push(snippet.id);
+    const snippet = this.drawFresh(CODE_SNIPPETS, g.usedSnippets, (s) => s.id, inUse);
+    if (!snippet) return false;
 
     const isBug = Math.random() < g.config.bugChance;
     const item = this.pickBacklogItem(isBug);
@@ -1074,14 +1081,8 @@ export class GameRoom extends DurableObject {
   spawnTriageTask(displays) {
     const g = this.g;
     const inUse = new Set(g.tasks.filter((t) => t.kind === 'triage').map((t) => t.ticketText));
-    let avail = TRIAGE_TICKETS.filter((t) => !inUse.has(t.text) && !g.usedTickets.includes(t.text));
-    if (!avail.length) {
-      g.usedTickets = [];
-      avail = TRIAGE_TICKETS.filter((t) => !inUse.has(t.text));
-    }
-    if (!avail.length) return false;
-    const ticket = pick(avail);
-    g.usedTickets.push(ticket.text);
+    const ticket = this.drawFresh(TRIAGE_TICKETS, g.usedTickets, (t) => t.text, inUse);
+    if (!ticket) return false;
     const display = this.pickDisplay(displays);
 
     const task = {
@@ -1203,12 +1204,12 @@ export class GameRoom extends DurableObject {
       case 'stampede': return sim.cacheWarmth >= 0.7;
       case 'integration': return this.ctlVal('circuit_breaker') === 1;
       case 'queue': return sim.queueDepth < 60;
-      case 'ddos': return this.ctlVal('firewall', 0) >= 6;
+      case 'ddos': return this.ctlVal('firewall', 0) >= INCIDENT_TUNING.firewallShed;
       case 'failover':
         // realistic DR: DNS must point at a healthy region AND TTL propagation
         // must have finished AND the (cold) standby must handle the load
         return REGIONS[this.ctlVal('dns_primary', 0)] !== sim.failedRegion
-          && !!sim.dnsSwitchedAt && Date.now() - sim.dnsSwitchedAt >= 8000
+          && !!sim.dnsSwitchedAt && Date.now() - sim.dnsSwitchedAt >= INCIDENT_TUNING.dnsTtlMs
           && sim.util < 1;
       case 'data_loss': return !sim.dbCorrupt && sim.restoring === 0;
       default: return false;
@@ -1261,15 +1262,7 @@ export class GameRoom extends DurableObject {
     if (g.doneLog.length > 12) g.doneLog.shift();
     g.incident = null;
     // the world heals: external causes end when the incident ends
-    g.sim.crashedPods = 0;
-    g.sim.paymentsUp = true;
-    g.sim.failedRegion = null;
-    g.sim.dnsSwitchedAt = null;
-    g.sim.leak = 0;
-    g.sim.leakFixed = false;
-    g.sim.badDeploy = false;
-    g.sim.dbCorrupt = false;
-    g.sim.restoring = 0;
+    Object.assign(g.sim, INCIDENT_SIM_RESET);
     if (!resolved) g.sim.cacheWarmth = 1;
     g.sim.trafficMult = Math.min(g.sim.trafficMult, resolved ? g.sim.trafficMult : 1);
     g.nextIncidentAt = Date.now() + (g.config.incidentEverySec * 1000) / this.ramp();
@@ -1298,8 +1291,8 @@ export class GameRoom extends DurableObject {
       }
       if (key === 'restore_backup') {
         if (g.sim.dbCorrupt && g.sim.restoring === 0) {
-          g.sim.restoring = 10;
-          this.botSay('system', `${p.name} kicked off a restore from backup — ETA 10s ⏳`);
+          g.sim.restoring = INCIDENT_TUNING.restoreSecs;
+          this.botSay('system', `${p.name} kicked off a restore from backup — ETA ${INCIDENT_TUNING.restoreSecs}s ⏳`);
         } else if (!g.sim.dbCorrupt) {
           this.botSay('system', `${p.name} ran a restore drill — backups verified ✅`);
         }
@@ -1319,18 +1312,20 @@ export class GameRoom extends DurableObject {
 
     // mega mode: quorum missions count actions from every holder of the dial
     for (const task of g.tasks.filter((t) => t.quorum && t.controlKey === key)) {
+      let have;
       if (control.type === 'button') {
         if (press && !task.pressedBy.includes(p.id)) task.pressedBy.push(p.id);
-        task.quorum.have = task.pressedBy.length;
+        have = task.pressedBy.length;
       } else {
-        let have = 0;
+        have = 0;
         for (const pl of this.activePlayers()) {
           const copy = pl.controls.find((c) => c.key === key);
           if (copy && copy.value === task.target) have++;
         }
-        task.quorum.have = have;
       }
-      if (task.quorum.have >= task.quorum.required) this.completeTask(task);
+      if (have === task.quorum.have) continue; // nothing moved — stay quiet
+      task.quorum.have = have;
+      if (have >= task.quorum.required) this.completeTask(task);
       else this.broadcast({ t: 'task', task });
     }
 

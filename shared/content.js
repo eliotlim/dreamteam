@@ -17,6 +17,14 @@ export const REGIONS = ['us-east', 'eu-west', 'ap-south'];
 // makes the team read dashboards; assisted sits in between with paid hints.
 // ---------------------------------------------------------------------------
 
+// Penalty for a wrong pick on code-review / triage missions. The server
+// applies it; mission cards render it — keep the two honest via this table.
+export const GUESS_PENALTY = { secs: 4, points: 10 };
+
+// Numeric incident tuning the sim enforces. The goal/hint prose below states
+// the same numbers — update both together.
+export const INCIDENT_TUNING = { firewallShed: 6, dnsTtlMs: 8000, restoreSecs: 10 };
+
 export const MODES = {
   arcade: {
     label: '🕹️ Arcade',
@@ -412,6 +420,7 @@ export const TRIAGE_TICKETS = [
 
 export const INCIDENTS = {
   outage: {
+    shortLabel: 'Crash-loop outages',
     title: 'Backend pods crash-looping',
     desc: 'Pods are OOMKilled seconds after start. Healthy capacity just fell off a cliff.',
     goal: 'Restart the crashed pods and recover from the overload',
@@ -424,6 +433,7 @@ export const INCIDENTS = {
     ],
   },
   spike: {
+    shortLabel: 'Traffic spikes',
     title: 'Traffic spike — we hit the front page',
     desc: 'A celebrity posted our 404 page. Traffic is 4x baseline and climbing.',
     goal: 'Get backend utilization back under 90%',
@@ -436,6 +446,7 @@ export const INCIDENTS = {
     ],
   },
   memleak: {
+    shortLabel: 'Memory leaks',
     title: 'Memory leak after the last deploy',
     desc: 'RSS climbs every minute. GC pauses lengthen, throughput slowly decays.',
     goal: 'Restart the backend pods to reclaim memory',
@@ -448,6 +459,7 @@ export const INCIDENTS = {
     ],
   },
   bad_deploy: {
+    shortLabel: 'Bad deploys',
     title: 'Bad deploy in the canary',
     desc: 'Error rate doubled minutes after the 14:02 deploy. Stack traces point at the new build.',
     goal: 'Push a hotfix to roll back the bad build',
@@ -461,6 +473,7 @@ export const INCIDENTS = {
     ],
   },
   stampede: {
+    shortLabel: 'Cache stampedes',
     title: 'Cache stampede',
     desc: 'A mass eviction sent every request straight to the database. Read latency is soaring.',
     goal: 'Rebuild cache warmth above 70%',
@@ -474,6 +487,7 @@ export const INCIDENTS = {
     ],
   },
   integration: {
+    shortLabel: 'Integration failures',
     title: 'PaymentCo API is down',
     desc: 'Their status page says "operational". It is lying. Retries are piling up.',
     goal: 'Flip the circuit breaker to stop the retry storm',
@@ -487,6 +501,7 @@ export const INCIDENTS = {
     ],
   },
   queue: {
+    shortLabel: 'Queue backlogs',
     title: 'Queue backlog exploding',
     desc: 'A batch import dumped a mountain of jobs. Consumers are drowning.',
     goal: 'Drain the queue below 60 jobs',
@@ -500,6 +515,7 @@ export const INCIDENTS = {
     ],
   },
   ddos: {
+    shortLabel: 'Bot floods',
     title: 'Bot flood at the edge',
     desc: 'A botnet is hammering the login endpoint with junk traffic from thousands of IPs.',
     goal: 'Raise Firewall Strictness to 6+ to shed the bot traffic',
@@ -513,6 +529,7 @@ export const INCIDENTS = {
     ],
   },
   failover: {
+    shortLabel: 'Regional failovers',
     title: 'Region outage',
     desc: 'The cloud provider tweeted an apology. Your primary region is gone.',
     goal: 'Fail DNS over to a healthy region, then ride out propagation',
@@ -525,6 +542,7 @@ export const INCIDENTS = {
     ],
   },
   data_loss: {
+    shortLabel: 'DB corruption (DR drill)',
     title: 'Database corruption',
     desc: 'A bad migration tore through the orders table. Writes are failing integrity checks.',
     goal: 'Restore the database from backup (restore takes ~10s)',
@@ -538,12 +556,9 @@ export const INCIDENTS = {
   },
 };
 
-export const INCIDENT_LABELS = {
-  outage: 'Crash-loop outages', spike: 'Traffic spikes', memleak: 'Memory leaks',
-  bad_deploy: 'Bad deploys', stampede: 'Cache stampedes', integration: 'Integration failures',
-  queue: 'Queue backlogs', ddos: 'Bot floods', failover: 'Regional failovers',
-  data_loss: 'DB corruption (DR drill)',
-};
+export const INCIDENT_LABELS = Object.fromEntries(
+  Object.entries(INCIDENTS).map(([k, def]) => [k, def.shortLabel]),
+);
 
 // ---------------------------------------------------------------------------
 // Ambient logs / traces

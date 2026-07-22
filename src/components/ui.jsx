@@ -87,6 +87,20 @@ export function Badge({ tone = 'neutral', className, children }) {
   );
 }
 
+// Small danger-count pill used on tabs and nav icons. Renders nothing at 0.
+export function CountPill({ count, className }) {
+  if (!count) return null;
+  return (
+    <span className={cx(
+      'min-w-4 h-4 px-0.5 rounded-full bg-danger text-white text-[9px] font-bold',
+      'inline-flex items-center justify-center leading-none',
+      className,
+    )}>
+      {count}
+    </span>
+  );
+}
+
 export function Dot({ tone = 'neutral', pulse, className }) {
   return (
     <span className={cx(
@@ -198,11 +212,7 @@ export function Tabs({ tabs, active, onChange, className }) {
         >
           <span className="inline-flex items-center gap-1.5">
             {tab.label}
-            {tab.count > 0 && (
-              <span className="px-1.5 py-px rounded-full bg-danger text-white text-[10px] font-bold leading-4">
-                {tab.count}
-              </span>
-            )}
+            <CountPill count={tab.count} />
           </span>
         </button>
       ))}

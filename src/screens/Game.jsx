@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Card, Badge, Progress, ThemeToggle, Avatar, Button, Overlay, Stat, cx } from '../components/ui.jsx';
+import { Card, Badge, Progress, ThemeToggle, Avatar, Button, Overlay, Stat, CountPill, cx } from '../components/ui.jsx';
 import { useNow, fmtClock } from '../lib/hooks.js';
 import { useStore } from '../lib/store.js';
 import { nextSprint } from '../lib/net.js';
@@ -162,11 +162,7 @@ function NavRail({ view, setView, badges }) {
         >
           <span className="text-xl leading-none relative">
             {v.icon}
-            {badges[v.id] > 0 && (
-              <span className="absolute -top-1.5 -right-3 min-w-4 h-4 px-0.5 rounded-full bg-danger text-white text-[9px] font-bold flex items-center justify-center">
-                {badges[v.id]}
-              </span>
-            )}
+            <CountPill count={badges[v.id]} className="absolute -top-1.5 -right-3" />
           </span>
           <span className="text-[10px] font-semibold">{v.label}</span>
         </button>
@@ -257,11 +253,7 @@ function PlayerMobile() {
             )}>
             <span className="text-lg leading-none relative">
               {t.icon}
-              {badge[t.id] > 0 && (
-                <span className="absolute -top-1 -right-2.5 min-w-4 h-4 px-0.5 rounded-full bg-danger text-white text-[9px] font-bold flex items-center justify-center">
-                  {badge[t.id]}
-                </span>
-              )}
+              <CountPill count={badge[t.id]} className="absolute -top-1 -right-2.5" />
             </span>
             {t.label}
           </button>

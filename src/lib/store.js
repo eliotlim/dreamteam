@@ -65,7 +65,12 @@ export function handleMessage(msg) {
         players: msg.players, backlog: msg.backlog,
         services: msg.services ?? g.services, nodes: msg.nodes ?? g.nodes,
       });
-      if (msg.phase === 'playing') { g.tasks = []; g.incident = null; }
+      // sprint boundaries invalidate live work; a fresh game (sprint 1)
+      // also invalidates the previous game's telemetry
+      if (msg.phase === 'playing' || msg.phase === 'review') { g.tasks = []; g.incident = null; }
+      if (msg.phase === 'playing' && msg.sprint === 1) {
+        g.logs = []; g.traces = []; g.metrics = []; g.doneLog = [];
+      }
       if (msg.now) state.clockOffset = msg.now - Date.now();
       break;
 

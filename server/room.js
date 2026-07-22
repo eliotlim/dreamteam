@@ -128,11 +128,22 @@ export class GameRoom extends DurableObject {
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)`);
       const row = [...ctx.storage.sql.exec(`SELECT v FROM kv WHERE k = 'game'`)][0];
       this.g = row ? JSON.parse(row.v) : null;
-      // migrate rooms persisted before game modes existed
-      if (this.g?.config && !this.g.config.mode) {
-        this.g.config.mode = 'arcade';
-        this.g.config.codeChance ??= MODES.arcade.codeChance;
-        this.g.config.triageChance ??= MODES.arcade.triageChance;
+      // rooms persisted by a pre-simulation build can't run under this code
+      if (this.g && (!Array.isArray(this.g.services) || !this.g.sim)) {
+        this.g = freshState(this.g.code || '????');
+      }
+      // migrate rooms persisted before game modes / mega mode existed
+      if (this.g?.config) {
+        if (!this.g.config.mode) {
+          this.g.config.mode = 'arcade';
+          this.g.config.codeChance ??= MODES.arcade.codeChance;
+          this.g.config.triageChance ??= MODES.arcade.triageChance;
+        }
+        this.g.config.megaMode ??= false;
+        this.g.usedSnippets ??= [];
+        this.g.usedTickets ??= [];
+        this.g.stats ??= freshStats();
+        this.g.stats.triaged ??= 0;
       }
     });
   }
@@ -195,12 +206,14 @@ export class GameRoom extends DurableObject {
         connected: true, joinedAt: Date.now(), controls: [],
       };
       g.players[pid] = p;
-      if (g.phase === 'playing' && role !== 'spectator') this.dealPoolControls(p);
+      if (['playing', 'review'].includes(g.phase) && role !== 'spectator') this.dealPoolControls(p);
       this.botSay('system', `${name} joined the team 👋`);
     } else {
       p.connected = true;
       p.name = name || p.name;
     }
+    // a room must never end up hostless (solo host reconnecting with the same pid)
+    if (!Object.values(g.players).some((x) => x.isHost)) p.isHost = true;
     this.persist();
     this.send(ws, { t: 'snapshot', g: this.publicState(), you: pid, now: Date.now() });
     this.broadcast({ t: 'players', players: this.publicPlayers() }, ws);
@@ -223,7 +236,7 @@ export class GameRoom extends DurableObject {
         .sort((a, b) => a.joinedAt - b.joinedAt)[0];
       if (next) next.isHost = true;
     }
-    if (this.g.phase === 'playing') {
+    if (['playing', 'review'].includes(this.g.phase)) {
       const orphaned = this.g.tasks.filter((t) => t.ownerPid === p.id || t.displayPid === p.id);
       for (const t of orphaned) this.finishTask(t, 'cancelled');
       if (orphaned.length) {
@@ -231,26 +244,35 @@ export class GameRoom extends DurableObject {
       }
       const remaining = this.activePlayers();
       if (remaining.length) {
-        // the ops console must never freeze: hand crit dials to someone present
-        const crits = p.controls.filter((c) => c.crit);
-        if (crits.length) {
+        // the ops console must never freeze: hand crit dials to someone
+        // present — plus the pool dial an active incident depends on, if the
+        // leaver held the only copy
+        const moves = p.controls.filter((c) => c.crit);
+        const reqKey = this.g.incident && INCIDENTS[this.g.incident.kind]?.requiresControl;
+        if (reqKey) {
+          const mine = p.controls.find((c) => c.key === reqKey && !c.crit);
+          const elsewhere = remaining.some((pl) => pl.controls.some((c) => c.key === reqKey));
+          if (mine && !elsewhere) moves.push(mine);
+        }
+        if (moves.length) {
           const heir = this.leastLoaded(remaining)[0];
-          heir.controls.push(...crits);
-          p.controls = p.controls.filter((c) => !c.crit);
+          heir.controls.push(...moves);
+          p.controls = p.controls.filter((c) => !moves.includes(c));
           this.botSay('system', `${p.name}'s ops controls were handed to ${heir.name} 🎛️`);
         }
-        // shrink quorums that lost a holder so missions stay winnable
+        // recount quorums that lost a holder so missions stay winnable
         for (const t of this.g.tasks.filter((t) => t.quorum)) {
-          const holders = remaining.filter(
-            (pl) => pl.controls.some((c) => c.key === t.controlKey),
-          ).length;
-          if (holders === 0) { this.finishTask(t, 'cancelled'); continue; }
-          if (t.quorum.required > holders) {
-            t.quorum.required = holders;
-            t.quorum.holders = holders;
-            if (t.quorum.have >= t.quorum.required) { this.completeTask(t); continue; }
-            this.broadcast({ t: 'task', task: t });
-          }
+          const holders = remaining.filter((pl) => pl.controls.some((c) => c.key === t.controlKey));
+          if (!holders.length) { this.finishTask(t, 'cancelled'); continue; }
+          const ctl = holders[0].controls.find((c) => c.key === t.controlKey);
+          const have = ctl.type === 'button'
+            ? t.pressedBy.length
+            : holders.filter((pl) => pl.controls.find((c) => c.key === t.controlKey).value === t.target).length;
+          t.quorum.holders = holders.length;
+          t.quorum.required = Math.min(t.quorum.required, holders.length);
+          t.quorum.have = have;
+          if (have >= t.quorum.required) this.completeTask(t);
+          else this.broadcast({ t: 'task', task: t });
         }
       }
     }
@@ -285,6 +307,8 @@ export class GameRoom extends DurableObject {
         this.applyConfig(msg.patch || {});
         this.persist();
         this.broadcast({ t: 'config', config: g.config });
+        // preset changes swap the starting services — keep clients current
+        this.broadcast({ t: 'services', services: g.services, nodes: g.nodes });
         break;
       }
       case 'start': {
@@ -345,7 +369,7 @@ export class GameRoom extends DurableObject {
     if (typeof patch.preset === 'string' && PRESETS[patch.preset]) {
       const { startingServices, ...knobs } = PRESETS[patch.preset];
       Object.assign(c, structuredClone(DEFAULT_CONFIG), knobs, {
-        preset: patch.preset, incidents: c.incidents, mode: c.mode,
+        preset: patch.preset, incidents: c.incidents, mode: c.mode, megaMode: c.megaMode,
         codeChance: c.codeChance, triageChance: c.triageChance, botChatter: c.botChatter,
       });
       this.g.services = [...CORE_SERVICES, ...startingServices];
@@ -414,6 +438,16 @@ export class GameRoom extends DurableObject {
   }
 
   ctlVal(key, fallback = 0) {
+    // in mega mode a pool dial exists on several screens — the sim honors the
+    // strongest connected copy so any holder's action counts
+    if (this.g.config.megaMode) {
+      let best = null;
+      for (const p of this.activePlayers()) {
+        const c = p.controls.find((c) => c.key === key);
+        if (c && (best === null || c.value > best)) best = c.value;
+      }
+      if (best !== null) return best;
+    }
     return this.findControl(key)?.c.value ?? fallback;
   }
 
@@ -575,7 +609,7 @@ export class GameRoom extends DurableObject {
     g.stats.sprints.push({ sprint: g.sprint, ...s });
     for (const t of g.tasks) this.finishTask(t, 'cancelled');
     g.tasks = [];
-    if (g.incident) this.clearIncident(false, true);
+    if (g.incident) this.clearIncident(false);
     if (g.sprint >= g.config.sprintCount) {
       g.victory = true;
       this.endGame();
@@ -762,7 +796,7 @@ export class GameRoom extends DurableObject {
       s: sim.util > 1.15 || sim.crashedPods > 0 ? 'degraded' : 'ok',
     };
     nodes.backend = {
-      v: `${Math.round(sim.util * 100)}% load · ${replicas - sim.crashedPods}/${replicas} pods`,
+      v: `${Math.round(sim.util * 100)}% load · ${Math.max(0, replicas - sim.crashedPods)}/${replicas} pods`,
       s: sim.crashedPods > 0 || sim.util > 1.15 ? 'down'
         : sim.util > 0.85 || sim.leak > 0.15 || sim.badDeploy ? 'degraded' : 'ok',
     };
@@ -865,6 +899,14 @@ export class GameRoom extends DurableObject {
     g.health = clamp(g.health, 0, 100);
     if (g.health <= 0) {
       g.victory = false;
+      // wind the sprint down properly: no live tasks/incidents on the retro
+      // screen, and the fatal sprint still gets its stats row
+      for (const t of [...g.tasks]) this.finishTask(t, 'cancelled');
+      if (g.incident) this.clearIncident(false);
+      if (g.sprintStats) {
+        g.sprintStats.scoreDelta = g.score - g.sprintStats.scoreStart;
+        g.stats.sprints.push({ sprint: g.sprint, ...g.sprintStats });
+      }
       this.persist();
       this.endGame();
       return;
@@ -1004,14 +1046,18 @@ export class GameRoom extends DurableObject {
     const [key, hs] = pick(candidates);
     const sample = hs[0].c;
 
-    let target;
-    if (sample.type === 'toggle') {
-      // aim at whichever state the minority holds so it's never pre-satisfied
-      const ones = hs.filter(({ c }) => c.value === 1).length;
-      target = ones * 2 >= hs.length ? 0 : 1;
-    } else {
-      target = this.rollTarget(sample);
+    // aim at the least-held value so the mission is never pre-satisfied
+    const countAt = (v) => hs.filter(({ c }) => c.value === v).length;
+    let values = [0, 1];
+    if (sample.type === 'slider') {
+      const min = sample.min ?? 0;
+      values = Array.from({ length: sample.max - min + 1 }, (_, i) => min + i);
     }
+    if (sample.type === 'select') values = sample.options.map((_, i) => i);
+    if (sample.type === 'button') values = [1];
+    const order = shuffle(values);
+    let target = order[0];
+    for (const v of order) if (countAt(v) < countAt(target)) target = v;
 
     const required = Math.max(2, Math.ceil(hs.length * 0.6));
     const have = sample.type === 'button' ? 0 : hs.filter(({ c }) => c.value === target).length;
@@ -1155,6 +1201,9 @@ export class GameRoom extends DurableObject {
       const def = INCIDENTS[k];
       if (def.requires && !g.services.includes(def.requires)) return false;
       if (def.requiresControl && !dealt(def.requiresControl)) return false;
+      // don't spawn scenarios the team's current posture already defeats
+      if (k === 'ddos' && this.ctlVal('firewall', 0) >= INCIDENT_TUNING.firewallShed) return false;
+      if (k === 'integration' && this.ctlVal('circuit_breaker') === 1) return false;
       return true;
     });
     if (!enabled.length) { g.nextIncidentAt = now + 30000; return; }
@@ -1255,8 +1304,10 @@ export class GameRoom extends DurableObject {
     if (!g.incident) return;
     const inc = g.incident;
     inc.status = resolved ? 'resolved' : 'failed';
+    // reveal the real diagnosis post-mortem (realism mode redacts the title)
+    inc.title = INCIDENTS[inc.kind]?.title || inc.title;
     g.doneLog.push({
-      id: inc.id, kind: 'incident', title: INCIDENTS[inc.kind]?.title || inc.title,
+      id: inc.id, kind: 'incident', title: inc.title,
       status: resolved ? 'done' : 'failed', finishedAt: Date.now(),
     });
     if (g.doneLog.length > 12) g.doneLog.shift();

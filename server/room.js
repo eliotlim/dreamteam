@@ -445,10 +445,12 @@ export class GameRoom extends DurableObject {
     }
     if (cfg.megaMode) {
       // mega mode: deal a small set of pool dials round-robin so every dial
-      // lives on ~2+ screens — missions then demand a quorum of holders
+      // lives on multiple screens — missions then demand a quorum of holders.
+      // Bigger crowds get more copies per dial so quorums feel like a crowd.
       const slots = players.reduce(
         (n, p) => n + Math.max(0, cfg.controlsPerPlayer - p.controls.length), 0);
-      const nKeys = clamp(Math.ceil(slots / 2), 2, CONTROL_POOL.length);
+      const copies = clamp(Math.round(players.length / 4) + 1, 2, 6);
+      const nKeys = clamp(Math.ceil(slots / copies), 2, CONTROL_POOL.length);
       const chosen = shuffle(CONTROL_POOL).slice(0, nKeys);
       let ci = 0;
       let progress = true;

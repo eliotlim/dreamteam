@@ -25,7 +25,7 @@ function useIsDesktop() {
 function HealthBar({ health }) {
   const tone = health > 60 ? 'ok' : health > 30 ? 'warn' : 'danger';
   return (
-    <div className="flex items-center gap-2 w-24 sm:w-32 shrink-0">
+    <div className="flex items-center gap-2 w-20 sm:w-32 shrink-0">
       <span className="text-xs">{health > 60 ? '💚' : health > 30 ? '💛' : '💔'}</span>
       <Progress value={health} tone={tone} className="flex-1 h-2" />
       <span className="text-xs font-bold tabular-nums w-6 text-right">{Math.round(health)}</span>
@@ -43,17 +43,17 @@ function Header() {
   return (
     <header className="h-12 sm:h-14 shrink-0 border-b border-line bg-surface/80 backdrop-blur flex items-center gap-2 sm:gap-4 px-3 sm:px-4">
       <span className="font-bold whitespace-nowrap">🚀 <span className="hidden md:inline">DreamTeam</span></span>
-      <Badge className="font-mono tracking-widest hidden sm:inline-flex">{g.code}</Badge>
+      <Badge className="font-mono tracking-widest max-sm:hidden">{g.code}</Badge>
       <Badge tone="accent">S{g.sprint}/{g.config.sprintCount}</Badge>
       <span className={cx(
-        'text-xl sm:text-2xl font-bold tabular-nums ml-auto w-16 text-right',
+        'text-lg sm:text-2xl font-bold tabular-nums ml-auto w-12 sm:w-16 text-right',
         urgent ? 'text-danger animate-blink' : 'text-ink',
       )}>
         {fmtClock(left)}
       </span>
       <div className="flex items-center gap-1.5">
         <span className="text-xs text-faint font-medium hidden sm:inline">SCORE</span>
-        <span className="text-base sm:text-lg font-bold tabular-nums text-accent w-14 text-right">{g.score}</span>
+        <span className="text-base sm:text-lg font-bold tabular-nums text-accent w-10 sm:w-14 text-right">{g.score}</span>
       </div>
       <HealthBar health={g.health} />
       {s.status === 'reconnecting' && <Badge tone="warn">⚡</Badge>}

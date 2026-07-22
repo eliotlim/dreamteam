@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
-  ROLES, CRITICAL_CONTROLS, CONTROL_POOL, FEATURES, BUGS, INCIDENTS,
+  ROLES, CRITICAL_CONTROLS, CONTROL_POOL, FEATURES, BUGS, INCIDENTS, MODES,
+  CODE_SNIPPETS, TRIAGE_TICKETS, TRIAGE_OPTIONS,
   SERVICES, CORE_SERVICES, EPIC_FEATURES, REGIONS, AMBIENT_LOGS, SERVICE_LOGS,
   TRACE_ROUTES, BOTS, CEO_SPRINT_LINES, CEO_INCIDENT_LINES, instructionFor,
   NAME_ADJECTIVES, NAME_NOUNS,
@@ -18,8 +19,10 @@ const CRITICAL_INIT = {
 
 export const DEFAULT_CONFIG = {
   preset: 'standard',
-  hints: true,            // incident cards suggest which dials help
+  mode: 'arcade',         // arcade | assisted | realism — how much the game tells you
   botChatter: true,       // flavor bots in chat
+  codeChance: MODES.arcade.codeChance,       // chance a task is a find-the-bug code review
+  triageChance: MODES.arcade.triageChance,   // chance a task is a ticket triage
   sprintCount: 3,
   // --- advanced ---
   sprintSeconds: 150,
@@ -35,7 +38,7 @@ export const DEFAULT_CONFIG = {
   healOnComplete: 2,
   difficultyRamp: 0.25,
   spikeMult: 4,
-  incidents: { outage: true, spike: true, integration: true, queue: true, failover: true },
+  incidents: Object.fromEntries(Object.keys(INCIDENTS).map((k) => [k, true])),
 };
 
 // Presets tune pacing AND how much infrastructure you start with.
@@ -65,6 +68,8 @@ function freshSim() {
   return {
     rps: 90, util: 0.7, err: 0.5, p95: 160, queueDepth: 12, dbIops: 150,
     crashedPods: 0, trafficMult: 1, paymentsUp: true, failedRegion: null,
+    leak: 0, leakFixed: false, cacheWarmth: 1, badDeploy: false,
+    dbCorrupt: false, restoring: 0, dnsSwitchedAt: null,
     stableTicks: 0,
   };
 }
@@ -93,8 +98,10 @@ function freshState(code) {
     metrics: [],
     nodes: {},
     sim: freshSim(),
-    stats: { shipped: 0, bugsFixed: 0, incidentsResolved: 0, missed: 0, sprints: [] },
+    stats: { shipped: 0, bugsFixed: 0, incidentsResolved: 0, triaged: 0, missed: 0, sprints: [] },
     sprintStats: null,
+    usedSnippets: [],
+    usedTickets: [],
     nextTaskAt: 0,
     nextIncidentAt: 0,
     nextTraceAt: 0,
@@ -110,6 +117,12 @@ export class GameRoom extends DurableObject {
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)`);
       const row = [...ctx.storage.sql.exec(`SELECT v FROM kv WHERE k = 'game'`)][0];
       this.g = row ? JSON.parse(row.v) : null;
+      // migrate rooms persisted before game modes existed
+      if (this.g?.config && !this.g.config.mode) {
+        this.g.config.mode = 'arcade';
+        this.g.config.codeChance ??= MODES.arcade.codeChance;
+        this.g.config.triageChance ??= MODES.arcade.triageChance;
+      }
     });
   }
 
@@ -258,6 +271,48 @@ export class GameRoom extends DurableObject {
         this.handleControl(p, msg.key, msg.value, !!msg.press);
         break;
       }
+      case 'code_guess': {
+        if (g.phase !== 'playing') break;
+        const task = g.tasks.find((x) => x.id === msg.taskId && x.kind === 'code');
+        if (!task || task.displayPid !== p.id) break;
+        if (Number(msg.line) === task.bugLine) {
+          this.completeTask(task);
+        } else {
+          task.wrongGuesses = (task.wrongGuesses ?? 0) + 1;
+          task.deadlineAt -= 4000;
+          g.score = Math.max(0, g.score - 10);
+          this.broadcast({ t: 'task', task });
+        }
+        this.persist();
+        break;
+      }
+      case 'triage_pick': {
+        if (g.phase !== 'playing') break;
+        const task = g.tasks.find((x) => x.id === msg.taskId && x.kind === 'triage');
+        if (!task || task.displayPid !== p.id) break;
+        if (Number(msg.choice) === task.answer) {
+          this.completeTask(task);
+        } else {
+          task.wrongGuesses = (task.wrongGuesses ?? 0) + 1;
+          task.deadlineAt -= 4000;
+          g.score = Math.max(0, g.score - 10);
+          this.broadcast({ t: 'task', task });
+        }
+        this.persist();
+        break;
+      }
+      case 'hint': {
+        if (g.phase !== 'playing' || !g.incident) break;
+        if (g.config.mode !== 'assisted' || g.incident.hint) break;
+        const cost = MODES.assisted.hintCost;
+        g.incident.hint = INCIDENTS[g.incident.kind].hint;
+        g.incident.hintAvailable = false;
+        g.score = Math.max(0, g.score - cost);
+        this.botSay('system', `${p.name} pulled up the runbook (−${cost} pts) 💡`);
+        this.broadcast({ t: 'incident', incident: g.incident });
+        this.persist();
+        break;
+      }
       case 'chat': {
         const text = String(msg.text || '').trim().slice(0, 300);
         if (!text) break;
@@ -277,9 +332,15 @@ export class GameRoom extends DurableObject {
     if (typeof patch.preset === 'string' && PRESETS[patch.preset]) {
       const { startingServices, ...knobs } = PRESETS[patch.preset];
       Object.assign(c, structuredClone(DEFAULT_CONFIG), knobs, {
-        preset: patch.preset, incidents: c.incidents, hints: c.hints, botChatter: c.botChatter,
+        preset: patch.preset, incidents: c.incidents, mode: c.mode,
+        codeChance: c.codeChance, triageChance: c.triageChance, botChatter: c.botChatter,
       });
       this.g.services = [...CORE_SERVICES, ...startingServices];
+    }
+    if (typeof patch.mode === 'string' && MODES[patch.mode]) {
+      c.mode = patch.mode;
+      c.codeChance = MODES[patch.mode].codeChance;
+      c.triageChance = MODES[patch.mode].triageChance;
     }
     num('sprintSeconds', 45, 600);
     num('sprintCount', 1, 10);
@@ -295,14 +356,19 @@ export class GameRoom extends DurableObject {
     num('healOnComplete', 0, 10);
     num('difficultyRamp', 0, 1);
     num('spikeMult', 2, 8);
-    if (typeof patch.hints === 'boolean') c.hints = patch.hints;
+    num('codeChance', 0, 1);
+    num('triageChance', 0, 1);
     if (typeof patch.botChatter === 'boolean') c.botChatter = patch.botChatter;
     if (patch.incidents && typeof patch.incidents === 'object') {
       for (const k of Object.keys(INCIDENTS)) {
         if (typeof patch.incidents[k] === 'boolean') c.incidents[k] = patch.incidents[k];
       }
     }
-    if (typeof patch.preset !== 'string') c.preset = 'custom';
+    // mode & botChatter are orthogonal to pacing — only knob changes mark the preset custom
+    const cosmetic = ['preset', 'mode', 'botChatter'];
+    if (typeof patch.preset !== 'string' && Object.keys(patch).some((k) => !cosmetic.includes(k))) {
+      c.preset = 'custom';
+    }
   }
 
   // ------------------------------------------------------------- controls helpers
@@ -345,7 +411,9 @@ export class GameRoom extends DurableObject {
     g.traces = [];
     g.metrics = [];
     g.sim = freshSim();
-    g.stats = { shipped: 0, bugsFixed: 0, incidentsResolved: 0, missed: 0, sprints: [] };
+    g.stats = { shipped: 0, bugsFixed: 0, incidentsResolved: 0, triaged: 0, missed: 0, sprints: [] };
+    g.usedSnippets = [];
+    g.usedTickets = [];
     this.buildBacklog();
     this.dealAllControls();
     this.startSprint(1);
@@ -419,13 +487,20 @@ export class GameRoom extends DurableObject {
     g.phase = 'playing';
     g.sprint = n;
     g.sprintEndsAt = now + g.config.sprintSeconds * 1000;
-    g.sprintStats = { shipped: 0, bugsFixed: 0, incidentsResolved: 0, missed: 0, scoreStart: g.score };
+    g.sprintStats = { shipped: 0, bugsFixed: 0, incidentsResolved: 0, triaged: 0, missed: 0, scoreStart: g.score };
     g.tasks = [];
     g.incident = null;
     g.sim.trafficMult = 1;
     g.sim.crashedPods = 0;
     g.sim.paymentsUp = true;
     g.sim.failedRegion = null;
+    g.sim.dnsSwitchedAt = null;
+    g.sim.leak = 0;
+    g.sim.leakFixed = false;
+    g.sim.badDeploy = false;
+    g.sim.dbCorrupt = false;
+    g.sim.restoring = 0;
+    g.sim.cacheWarmth = 1;
     if (n > 1) g.health = clamp(g.health + 10, 0, 100);
     g.nextTaskAt = now + 3000;
     g.nextIncidentAt = now + (g.config.incidentEverySec * 1000) / this.ramp();
@@ -492,26 +567,61 @@ export class GameRoom extends DurableObject {
     const sim = g.sim;
     const cfg = g.config;
     const has = (svc) => g.services.includes(svc);
+    const inc = g.incident;
 
     // --- demand ---
     const growth = 1 + 0.2 * (g.sprint - 1);
     let demand = (85 + 30 * Math.sin(now / 20000) + (Math.random() - 0.5) * 16) * growth;
-    if (g.incident?.kind === 'spike') {
-      const ramp = Math.min(1, (now - g.incident.startedAt) / 6000);
+    const firewall = this.ctlVal('firewall', 2);
+    if (inc?.kind === 'spike') {
+      const ramp = Math.min(1, (now - inc.startedAt) / 6000);
       sim.trafficMult = 1 + (cfg.spikeMult - 1) * ramp;
+    } else if (inc?.kind === 'ddos') {
+      const ramp = Math.min(1, (now - inc.startedAt) / 5000);
+      const shed = Math.min(0.95, firewall / 8);           // strict firewall drops the bots
+      sim.trafficMult = 1 + cfg.spikeMult * ramp * (1 - shed);
     } else {
       sim.trafficMult = Math.max(1, sim.trafficMult - 0.3); // spikes subside
     }
     demand *= sim.trafficMult;
     sim.rps = Math.max(5, Math.round(demand));
 
+    // --- memory leak decays capacity until pods are restarted ---
+    if (inc?.kind === 'memleak' && !sim.leakFixed) {
+      sim.leak = Math.min(0.6, sim.leak + 0.04);
+    }
+
+    // --- cache warmth rebuilds over time, faster with a longer TTL ---
+    const cacheTtl = this.ctlVal('cache_ttl', 3);
+    if (has('cache')) {
+      sim.cacheWarmth = Math.min(1, sim.cacheWarmth + 0.008 + 0.012 * cacheTtl);
+    }
+
+    // --- restore-from-backup countdown; RPO depends on the backup dial ---
+    if (sim.restoring > 0) {
+      sim.restoring--;
+      if (sim.restoring === 0 && sim.dbCorrupt) {
+        sim.dbCorrupt = false;
+        const freq = this.ctlVal('backup_freq', 3);
+        if (freq >= 6) {
+          this.botSay('system', 'Database restored from a 5-minute-old snapshot — barely any data lost 📦✨');
+        } else if (freq >= 3) {
+          this.botSay('system', 'Database restored from backup — lost about an hour of writes 📦');
+        } else {
+          g.health -= 8;
+          this.botSay('system', 'Database restored, but the last backup was ancient — a full day of data gone 📦💀 (−8 health)');
+        }
+      }
+    }
+
     // --- capacity ---
     const replicas = this.ctlVal('replicas', 3);
-    const cacheTtl = this.ctlVal('cache_ttl', 3);
     const effReplicas = Math.max(1, replicas - sim.crashedPods);
-    const cacheFactor = has('cache') ? 1 + 0.06 * cacheTtl : 1;
+    const cacheFactor = has('cache') ? 1 + 0.06 * cacheTtl * sim.cacheWarmth : 1;
     const cdnFactor = has('cdn') ? 1.1 : 1;
-    const capacity = effReplicas * PER_REPLICA_RPS * cacheFactor * cdnFactor;
+    const coldRegion = sim.dnsSwitchedAt && now - sim.dnsSwitchedAt < 16000;
+    const capacity = effReplicas * PER_REPLICA_RPS * cacheFactor * cdnFactor
+      * (1 - sim.leak) * (coldRegion ? 0.75 : 1);
     sim.util = sim.rps / capacity;
 
     // --- autoscaler nudges the real replicas dial (owner sees it move) ---
@@ -523,17 +633,31 @@ export class GameRoom extends DurableObject {
     // --- latency & errors follow utilization ---
     let p95 = 130 + 60 * sim.util + (Math.random() - 0.5) * 30;
     if (sim.util > 0.8) p95 += (sim.util - 0.8) * 1200;
+    p95 += sim.leak * 500;                                 // GC pauses
     let err = 0.3 + Math.random() * 0.5;
     if (sim.util > 1) err += (sim.util - 1) * 45;          // load shedding
     if (sim.crashedPods > 0) err += 6;                     // crash-looping pods
+    if (sim.badDeploy) { err += 18; p95 += 120; }          // broken build in prod
+    if (sim.dbCorrupt) err += 22;                          // writes failing integrity checks
+    else if (sim.restoring > 0) err += 8;                  // restore still in progress
+    if (inc?.kind === 'ddos' && firewall < 6) err += 5;    // junk auth traffic errors
     const breakerOn = this.ctlVal('circuit_breaker') === 1;
     if (has('payments') && !sim.paymentsUp) {
       err += breakerOn ? 2 : 14;                           // fail fast vs timeouts
       p95 += breakerOn ? 20 : 350;
     }
     const dnsRegion = REGIONS[this.ctlVal('dns_primary', 0)];
-    if (sim.failedRegion && dnsRegion === sim.failedRegion) {
-      err += 28; p95 += 500;                               // pointing at a dead region
+    if (sim.failedRegion) {
+      if (dnsRegion === sim.failedRegion) {
+        sim.dnsSwitchedAt = null;                          // pointing at the dead region
+        err += 28; p95 += 500;
+      } else {
+        if (!sim.dnsSwitchedAt) {
+          sim.dnsSwitchedAt = now;
+          this.botSay('system', '🌐 DNS record updated — waiting out TTL propagation…');
+        }
+        if (now - sim.dnsSwitchedAt < 8000) { err += 12; p95 += 220; } // stale resolvers
+      }
     }
 
     // --- queue dynamics ---
@@ -549,7 +673,7 @@ export class GameRoom extends DurableObject {
     }
 
     // --- db ---
-    const cacheHitRatio = has('cache') ? 0.35 + 0.06 * cacheTtl : 0;
+    const cacheHitRatio = has('cache') ? (0.35 + 0.06 * cacheTtl) * sim.cacheWarmth : 0;
     sim.dbIops = Math.round(sim.rps * 2.2 * (1 - cacheHitRatio) * (sim.failedRegion && dnsRegion !== sim.failedRegion ? 1.4 : 1));
 
     sim.err = Math.round(clamp(err, 0, 100) * 10) / 10;
@@ -575,7 +699,7 @@ export class GameRoom extends DurableObject {
     };
     nodes.lb = {
       v: `${sim.rps} rps`,
-      s: sim.util > 1.2 ? 'degraded' : 'ok',
+      s: sim.util > 1.2 || (g.incident?.kind === 'ddos' && this.ctlVal('firewall', 2) < 6) ? 'degraded' : 'ok',
     };
     nodes.frontend = {
       v: `${sim.p95} ms p95`,
@@ -583,14 +707,22 @@ export class GameRoom extends DurableObject {
     };
     nodes.backend = {
       v: `${Math.round(sim.util * 100)}% load · ${replicas - sim.crashedPods}/${replicas} pods`,
-      s: sim.crashedPods > 0 || sim.util > 1.15 ? 'down' : sim.util > 0.85 ? 'degraded' : 'ok',
+      s: sim.crashedPods > 0 || sim.util > 1.15 ? 'down'
+        : sim.util > 0.85 || sim.leak > 0.15 || sim.badDeploy ? 'degraded' : 'ok',
     };
-    nodes.db = {
-      v: `${sim.dbIops} iops`,
-      s: (sim.failedRegion && dnsRegion === sim.failedRegion) || sim.dbIops > 700 ? 'degraded' : 'ok',
-    };
+    nodes.db = sim.dbCorrupt
+      ? { v: sim.restoring > 0 ? `restoring… ${sim.restoring}s` : 'integrity errors', s: sim.restoring > 0 ? 'degraded' : 'down' }
+      : {
+          v: `${sim.dbIops} iops`,
+          s: (sim.failedRegion && dnsRegion === sim.failedRegion) || sim.dbIops > 700 ? 'degraded' : 'ok',
+        };
     if (has('cdn')) nodes.cdn = { v: `${70 + rnd(25)}% hit`, s: 'ok' };
-    if (has('cache')) nodes.cache = { v: `${sim.cacheHit}% hit`, s: 'ok' };
+    if (has('cache')) {
+      nodes.cache = {
+        v: `${sim.cacheHit}% hit`,
+        s: sim.cacheWarmth < 0.25 ? 'down' : sim.cacheWarmth < 0.6 ? 'degraded' : 'ok',
+      };
+    }
     if (has('queue')) {
       nodes.queue = {
         v: `${sim.queueDepth} jobs`,
@@ -703,6 +835,24 @@ export class GameRoom extends DurableObject {
     return set;
   }
 
+  pickBacklogItem(isBug) {
+    const g = this.g;
+    if (isBug) return { title: pick(BUGS) };
+    if (!g.backlog.length) g.backlog = shuffle(FEATURES).map((title) => ({ title }));
+    return g.backlog.shift();
+  }
+
+  taskDeadline(mult = 1) {
+    return (this.g.config.taskDeadlineSec * 1000 * mult) / (1 + 0.15 * (this.g.sprint - 1));
+  }
+
+  // spread work evenly: new tasks land on the least-loaded screen
+  pickDisplay(displays) {
+    const load = (p) => this.g.tasks.filter((t) => t.displayPid === p.id).length;
+    const min = Math.min(...displays.map(load));
+    return pick(displays.filter((p) => load(p) === min));
+  }
+
   spawnTask() {
     const g = this.g;
     const players = this.activePlayers();
@@ -711,6 +861,11 @@ export class GameRoom extends DurableObject {
       (p) => g.tasks.filter((t) => t.displayPid === p.id).length < g.config.maxActivePerPlayer,
     );
     if (!displays.length) return;
+
+    // one roll decides the task family: triage ticket, code review, or dial
+    const roll = Math.random();
+    if (roll < g.config.triageChance && this.spawnTriageTask(displays)) return;
+    if (roll < g.config.triageChance + g.config.codeChance && this.spawnCodeTask(displays)) return;
 
     // tasks only target mission dials (pool controls) — the ops console is
     // reserved for running the actual system
@@ -727,9 +882,7 @@ export class GameRoom extends DurableObject {
     if (control.type === 'select') { do { target = rnd(control.options.length); } while (target === control.value); }
 
     const isBug = Math.random() < g.config.bugChance;
-    if (!g.backlog.length) g.backlog = shuffle(FEATURES).map((title) => ({ title }));
-    const item = isBug ? { title: pick(BUGS) } : g.backlog.shift();
-    const deadline = (g.config.taskDeadlineSec * 1000) / (1 + 0.15 * (g.sprint - 1));
+    const item = this.pickBacklogItem(isBug);
 
     const task = {
       id: uid(),
@@ -737,13 +890,13 @@ export class GameRoom extends DurableObject {
       title: item.title,
       epicService: !isBug && item.service && !g.services.includes(item.service) ? item.service : null,
       instr: instructionFor(control, target),
-      displayPid: pick(displays).id,
+      displayPid: this.pickDisplay(displays).id,
       ownerPid: owner.id,
       ownerName: owner.name,
       controlKey: control.key,
       target,
       createdAt: Date.now(),
-      deadlineAt: Date.now() + deadline,
+      deadlineAt: Date.now() + this.taskDeadline(),
       status: 'active',
       points: isBug ? 80 : 100,
     };
@@ -752,6 +905,77 @@ export class GameRoom extends DurableObject {
     if (isBug && g.config.botChatter && Math.random() < 0.5) {
       this.botSay('support', `New ticket: "${item.title}" — 3 customers affected 📩`);
     }
+  }
+
+  // Find-the-bug code review. The buggy line index ships with the task;
+  // engineers render a lens marker over it, everyone else squints.
+  spawnCodeTask(displays) {
+    const g = this.g;
+    const inUse = new Set(g.tasks.filter((t) => t.kind === 'code').map((t) => t.snippetId));
+    let avail = CODE_SNIPPETS.filter((s) => !inUse.has(s.id) && !g.usedSnippets.includes(s.id));
+    if (!avail.length) {
+      g.usedSnippets = [];
+      avail = CODE_SNIPPETS.filter((s) => !inUse.has(s.id));
+    }
+    if (!avail.length) return false;
+    const snippet = pick(avail);
+    g.usedSnippets.push(snippet.id);
+
+    const isBug = Math.random() < g.config.bugChance;
+    const item = this.pickBacklogItem(isBug);
+    const codeKind = isBug ? 'bug' : item.service && !g.services.includes(item.service) ? 'service' : 'feature';
+    const title = codeKind === 'bug' ? `Fix: ${item.title}`
+      : codeKind === 'service' ? `Build service: ${item.title}`
+      : `Build: ${item.title}`;
+    const display = this.pickDisplay(displays);
+
+    const task = {
+      id: uid(), kind: 'code', codeKind, title,
+      epicService: codeKind === 'service' ? item.service : null,
+      instr: 'Review the code — tap the broken line',
+      snippetId: snippet.id,
+      snippet: { name: snippet.name, lines: snippet.lines },
+      bugLine: snippet.bug, why: snippet.why, wrongGuesses: 0,
+      displayPid: display.id, ownerPid: display.id, ownerName: display.name,
+      createdAt: Date.now(), deadlineAt: Date.now() + this.taskDeadline(1.8),
+      status: 'active', points: 150,
+    };
+    g.tasks.push(task);
+    this.broadcast({ t: 'task', task });
+    return true;
+  }
+
+  // Ticket triage — route a customer request or bug report to the right
+  // priority. PMs get an instinct marker on the correct option.
+  spawnTriageTask(displays) {
+    const g = this.g;
+    const inUse = new Set(g.tasks.filter((t) => t.kind === 'triage').map((t) => t.ticketText));
+    let avail = TRIAGE_TICKETS.filter((t) => !inUse.has(t.text) && !g.usedTickets.includes(t.text));
+    if (!avail.length) {
+      g.usedTickets = [];
+      avail = TRIAGE_TICKETS.filter((t) => !inUse.has(t.text));
+    }
+    if (!avail.length) return false;
+    const ticket = pick(avail);
+    g.usedTickets.push(ticket.text);
+    const display = this.pickDisplay(displays);
+
+    const task = {
+      id: uid(), kind: 'triage', triageKind: ticket.kind,
+      title: ticket.kind === 'bug' ? 'Triage: bug report' : 'Triage: customer request',
+      instr: 'Route it to the right priority',
+      ticketText: ticket.text,
+      options: TRIAGE_OPTIONS, answer: ticket.answer, why: ticket.why, wrongGuesses: 0,
+      displayPid: display.id, ownerPid: display.id, ownerName: display.name,
+      createdAt: Date.now(), deadlineAt: Date.now() + this.taskDeadline(1.3),
+      status: 'active', points: 90,
+    };
+    g.tasks.push(task);
+    this.broadcast({ t: 'task', task });
+    if (g.config.botChatter && Math.random() < 0.6) {
+      this.botSay('support', `📥 New ${ticket.kind === 'bug' ? 'bug report' : 'request'}: "${ticket.text}"`);
+    }
+    return true;
   }
 
   finishTask(task, status) {
@@ -768,10 +992,15 @@ export class GameRoom extends DurableObject {
     const fast = Date.now() - task.createdAt < (task.deadlineAt - task.createdAt) / 2;
     g.score += task.points + (fast ? 25 : 0);
     g.health = clamp(g.health + g.config.healOnComplete, 0, 100);
-    if (task.kind === 'bug') { g.stats.bugsFixed++; g.sprintStats.bugsFixed++; }
+    const asBug = task.kind === 'bug' || task.codeKind === 'bug';
+    if (task.kind === 'triage') {
+      g.stats.triaged = (g.stats.triaged ?? 0) + 1;
+      g.sprintStats.triaged = (g.sprintStats.triaged ?? 0) + 1;
+    } else if (asBug) { g.stats.bugsFixed++; g.sprintStats.bugsFixed++; }
     else { g.stats.shipped++; g.sprintStats.shipped++; }
     this.finishTask(task, 'done');
     if (task.epicService) this.unlockService(task.epicService, task.title);
+    else if (task.why) this.botSay('system', `🧠 ${task.why}`);
     else if (task.kind === 'feature' && g.config.botChatter && Math.random() < 0.35) {
       this.botSay('system', `Shipped: "${task.title}" ${fast ? '⚡ speed bonus!' : '🎉'}`);
     }
@@ -790,10 +1019,18 @@ export class GameRoom extends DurableObject {
 
   spawnIncident(now) {
     const g = this.g;
+    const cfg = g.config;
+    // scenarios that hinge on a pool dial only fire if that dial was dealt
+    const dealt = (key) => {
+      const found = this.findControl(key);
+      return !!found && found.p.connected && found.p.role !== 'spectator';
+    };
     const enabled = Object.keys(INCIDENTS).filter((k) => {
-      if (!g.config.incidents[k]) return false;
-      const req = INCIDENTS[k].requires;
-      return !req || g.services.includes(req);
+      if (!cfg.incidents[k]) return false;
+      const def = INCIDENTS[k];
+      if (def.requires && !g.services.includes(def.requires)) return false;
+      if (def.requiresControl && !dealt(def.requiresControl)) return false;
+      return true;
     });
     if (!enabled.length) { g.nextIncidentAt = now + 30000; return; }
 
@@ -803,22 +1040,31 @@ export class GameRoom extends DurableObject {
 
     // seed the situation into the simulation
     if (kind === 'outage') sim.crashedPods = Math.max(1, Math.floor(this.ctlVal('replicas', 3) * 0.6));
+    if (kind === 'memleak') { sim.leak = 0.08; sim.leakFixed = false; }
+    if (kind === 'bad_deploy') sim.badDeploy = true;
+    if (kind === 'stampede') sim.cacheWarmth = 0.05;
     if (kind === 'integration') sim.paymentsUp = false;
     if (kind === 'queue') sim.queueDepth = clamp(sim.queueDepth + 220, 0, 999);
-    if (kind === 'failover') sim.failedRegion = REGIONS[this.ctlVal('dns_primary', 0)];
+    if (kind === 'failover') { sim.failedRegion = REGIONS[this.ctlVal('dns_primary', 0)]; sim.dnsSwitchedAt = null; }
+    if (kind === 'data_loss') { sim.dbCorrupt = true; sim.restoring = 0; }
     sim.stableTicks = 0;
 
-    g.incident = {
-      id: uid(), kind,
-      title: def.title, desc: def.desc, goal: def.goal,
-      hint: g.config.hints ? def.hint : null,
-      startedAt: now,
-      deadlineAt: now + g.config.incidentDeadlineSec * 1000,
-      status: 'active',
-      goalDone: false,
+    // what the players get told depends on the game mode
+    const mode = MODES[cfg.mode] ? cfg.mode : 'arcade';
+    const base = {
+      id: uid(), kind, startedAt: now,
+      deadlineAt: now + cfg.incidentDeadlineSec * 1000,
+      status: 'active', goalDone: false,
     };
-    this.botSay('pager', `🚨 INCIDENT: ${def.title} — ${def.desc}`);
-    if (g.config.botChatter && Math.random() < 0.5) this.botSay('ceo', pick(CEO_INCIDENT_LINES));
+    if (mode === 'realism') {
+      g.incident = { ...base, title: 'Alerts firing', desc: def.alert, goal: null, hint: null };
+    } else if (mode === 'assisted') {
+      g.incident = { ...base, title: def.title, desc: def.desc, goal: def.goal, hint: null, hintAvailable: true };
+    } else {
+      g.incident = { ...base, title: def.title, desc: def.desc, goal: def.goal, hint: def.hint };
+    }
+    this.botSay('pager', `🚨 INCIDENT: ${mode === 'realism' ? def.alert : `${def.title} — ${def.desc}`}`);
+    if (cfg.botChatter && Math.random() < 0.5) this.botSay('ceo', pick(CEO_INCIDENT_LINES));
     this.broadcast({ t: 'incident', incident: g.incident });
   }
 
@@ -828,9 +1074,19 @@ export class GameRoom extends DurableObject {
     switch (g.incident.kind) {
       case 'outage': return sim.crashedPods === 0 && sim.util < 1;
       case 'spike': return sim.util < 0.9;
+      case 'memleak': return sim.leakFixed && sim.util < 1;
+      case 'bad_deploy': return !sim.badDeploy;
+      case 'stampede': return sim.cacheWarmth >= 0.7;
       case 'integration': return this.ctlVal('circuit_breaker') === 1;
       case 'queue': return sim.queueDepth < 60;
-      case 'failover': return REGIONS[this.ctlVal('dns_primary', 0)] !== sim.failedRegion;
+      case 'ddos': return this.ctlVal('firewall', 0) >= 6;
+      case 'failover':
+        // realistic DR: DNS must point at a healthy region AND TTL propagation
+        // must have finished AND the (cold) standby must handle the load
+        return REGIONS[this.ctlVal('dns_primary', 0)] !== sim.failedRegion
+          && !!sim.dnsSwitchedAt && Date.now() - sim.dnsSwitchedAt >= 8000
+          && sim.util < 1;
+      case 'data_loss': return !sim.dbCorrupt && sim.restoring === 0;
       default: return false;
     }
   }
@@ -842,15 +1098,17 @@ export class GameRoom extends DurableObject {
 
     if (Math.random() < 0.6) logs.push(this.makeLog(pick(INCIDENTS[inc.kind].logs)));
 
+    // traffic-ramp incidents can't be "solved" before the ramp even lands
+    const ramping = (inc.kind === 'spike' || inc.kind === 'ddos') && now - inc.startedAt < 7000;
     // goal must hold for 2 consecutive ticks (no flapping past the finish line)
-    inc.goalDone = this.incidentGoalMet();
+    inc.goalDone = !ramping && this.incidentGoalMet();
     if (inc.goalDone) {
       g.sim.stableTicks++;
       if (g.sim.stableTicks >= 2) {
         const fast = now - inc.startedAt < (g.config.incidentDeadlineSec * 1000) / 2;
         g.score += 150 + (fast ? 50 : 0);
         g.stats.incidentsResolved++; g.sprintStats.incidentsResolved++;
-        this.botSay('pager', `✅ Incident resolved: ${inc.title}${fast ? ' — blazing fast, +50 bonus' : ''}.`);
+        this.botSay('pager', `✅ Incident resolved: ${INCIDENTS[inc.kind].title}${fast ? ' — blazing fast, +50 bonus' : ''}.`);
         this.clearIncident(true);
         return;
       }
@@ -860,7 +1118,9 @@ export class GameRoom extends DurableObject {
 
     if (now >= inc.deadlineAt) {
       g.health -= 15;
-      this.botSay('pager', `🔥 "${inc.title}" burned for ${Math.round((now - inc.startedAt) / 1000)}s before outside help arrived. That one leaves a mark.`);
+      const def = INCIDENTS[inc.kind];
+      this.botSay('pager', `🔥 "${def.title}" burned for ${Math.round((now - inc.startedAt) / 1000)}s before outside help arrived. That one leaves a mark.`);
+      if (g.config.mode !== 'arcade') this.botSay('system', `📖 Post-mortem: ${def.hint}`);
       this.clearIncident(false);
     }
   }
@@ -871,7 +1131,7 @@ export class GameRoom extends DurableObject {
     const inc = g.incident;
     inc.status = resolved ? 'resolved' : 'failed';
     g.doneLog.push({
-      id: inc.id, kind: 'incident', title: inc.title,
+      id: inc.id, kind: 'incident', title: INCIDENTS[inc.kind]?.title || inc.title,
       status: resolved ? 'done' : 'failed', finishedAt: Date.now(),
     });
     if (g.doneLog.length > 12) g.doneLog.shift();
@@ -880,6 +1140,13 @@ export class GameRoom extends DurableObject {
     g.sim.crashedPods = 0;
     g.sim.paymentsUp = true;
     g.sim.failedRegion = null;
+    g.sim.dnsSwitchedAt = null;
+    g.sim.leak = 0;
+    g.sim.leakFixed = false;
+    g.sim.badDeploy = false;
+    g.sim.dbCorrupt = false;
+    g.sim.restoring = 0;
+    if (!resolved) g.sim.cacheWarmth = 1;
     g.sim.trafficMult = Math.min(g.sim.trafficMult, resolved ? g.sim.trafficMult : 1);
     g.nextIncidentAt = Date.now() + (g.config.incidentEverySec * 1000) / this.ramp();
     if (!silent) this.broadcast({ t: 'incident', incident: inc });
@@ -895,9 +1162,27 @@ export class GameRoom extends DurableObject {
 
     if (control.type === 'button') {
       if (!press) return;
-      if (key === 'restart_backend' && g.sim.crashedPods > 0) {
+      if (key === 'restart_backend' && (g.sim.crashedPods > 0 || g.sim.leak > 0)) {
         g.sim.crashedPods = 0;
+        if (g.incident?.kind === 'memleak') g.sim.leakFixed = true;
+        g.sim.leak = 0;
         this.botSay('system', `${p.name} restarted the backend pods 🔄`);
+      }
+      if (key === 'hotfix' && g.sim.badDeploy) {
+        g.sim.badDeploy = false;
+        this.botSay('system', `${p.name} pushed a hotfix — rolling back the bad build 🚑`);
+      }
+      if (key === 'restore_backup') {
+        if (g.sim.dbCorrupt && g.sim.restoring === 0) {
+          g.sim.restoring = 10;
+          this.botSay('system', `${p.name} kicked off a restore from backup — ETA 10s ⏳`);
+        } else if (!g.sim.dbCorrupt) {
+          this.botSay('system', `${p.name} ran a restore drill — backups verified ✅`);
+        }
+      }
+      if (key === 'clear_cache') {
+        g.sim.cacheWarmth = Math.min(g.sim.cacheWarmth, 0.15);
+        this.botSay('system', `${p.name} flushed the cache — hit ratio rebuilding from cold 🧊`);
       }
     } else {
       if (typeof value !== 'number') return;

@@ -2,7 +2,7 @@ import { Badge, Avatar, Progress, SectionLabel, cx } from '../components/ui.jsx'
 import { useNow } from '../lib/hooks.js';
 import { useStore } from '../lib/store.js';
 
-const KIND_ICON = { feature: '✨', bug: '🐛', incident: '🚨' };
+const KIND_ICON = { feature: '✨', bug: '🐛', incident: '🚨', code: '👨‍💻', triage: '📥' };
 
 function BoardCard({ children, className }) {
   return (
@@ -50,7 +50,9 @@ export default function Board() {
         {g.incident && (
           <BoardCard className="border-danger bg-danger-soft">
             <div className="font-semibold">🚨 {g.incident.title}</div>
-            <div className="text-faint">{g.incident.needs.filter((n) => n.done).length}/{g.incident.needs.length} steps done</div>
+            <div className="text-faint">
+              {g.incident.goalDone ? 'stabilizing — confirming recovery' : g.incident.goal || 'root cause unknown — diagnose it'}
+            </div>
           </BoardCard>
         )}
         {active.map((t) => {

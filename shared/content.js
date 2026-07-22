@@ -13,6 +13,29 @@ export const ROLE_META = {
 export const REGIONS = ['us-east', 'eu-west', 'ap-south'];
 
 // ---------------------------------------------------------------------------
+// Game modes. Arcade is dial-turning; realism strips away the answers and
+// makes the team read dashboards; assisted sits in between with paid hints.
+// ---------------------------------------------------------------------------
+
+export const MODES = {
+  arcade: {
+    label: '🕹️ Arcade',
+    blurb: 'Incidents tell you exactly which dials to turn. Mostly dials, pure party.',
+    codeChance: 0.12, triageChance: 0.12, hintCost: 0,
+  },
+  assisted: {
+    label: '🧭 Assisted',
+    blurb: 'Incidents show the goal but not the fix — hints cost 25 points.',
+    codeChance: 0.2, triageChance: 0.18, hintCost: 25,
+  },
+  realism: {
+    label: '🧠 Realism',
+    blurb: 'Only pager alerts. Read the graphs, find the failing component, fix it yourselves.',
+    codeChance: 0.25, triageChance: 0.2, hintCost: 0,
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Services. `core` services always exist; others start per difficulty or get
 // unlocked when the matching epic feature ships ("customer feature requests").
 // `tier` drives the diagram layout (left → right).
@@ -54,6 +77,7 @@ export const CRITICAL_CONTROLS = [
   { key: 'dns_primary',     label: 'DNS Primary Record',       type: 'select', role: 'ops', options: REGIONS },
   { key: 'queue_drain',     label: 'Queue Drain Rate',         type: 'slider', role: 'ops', min: 0, max: 8 },
   { key: 'restart_backend', label: 'Restart Backend Pods',     type: 'button', role: 'ops' },
+  { key: 'restore_backup',  label: 'Restore DB from Backup',   type: 'button', role: 'ops' },
   { key: 'replicas',        label: 'Backend Replicas',         type: 'slider', role: 'engineer', min: 1, max: 8 },
   { key: 'cache_ttl',       label: 'Cache TTL',                type: 'slider', role: 'engineer', min: 0, max: 8 },
 ];
@@ -134,17 +158,219 @@ export function instructionFor(control, target) {
 }
 
 // ---------------------------------------------------------------------------
+// Code review snippets — build features, spin up microservices, and fix bugs
+// by spotting the subtly broken line. Engineers get a lens that marks it.
+// `bug` is the 0-based index into `lines`.
+// ---------------------------------------------------------------------------
+
+export const CODE_SNIPPETS = [
+  {
+    id: 'cart-total', name: 'cart.js',
+    lines: [
+      '// sum the price of every item in the cart',
+      'function cartTotal(items) {',
+      '  let total = 0;',
+      '  for (let i = 0; i < items.length - 1; i++) {',
+      '    total += items[i].price;',
+      '  }',
+      '  return total;',
+      '}',
+    ],
+    bug: 3, why: 'i < items.length - 1 skips the last item in the cart.',
+  },
+  {
+    id: 'admin-check', name: 'authz.js',
+    lines: [
+      '// only admins may delete projects',
+      'function canDelete(user) {',
+      "  if (user.role = 'admin') {",
+      '    return true;',
+      '  }',
+      '  return false;',
+      '}',
+    ],
+    bug: 2, why: "= assigns instead of comparing — every user becomes an 'admin'.",
+  },
+  {
+    id: 'retry-fetch', name: 'http.js',
+    lines: [
+      '// retry the request up to 3 times',
+      'async function fetchWithRetry(url) {',
+      '  for (let i = 0; i < 3; i++) {',
+      '    const res = fetch(url);',
+      '    if (res.ok) return res;',
+      '  }',
+      "  throw new Error('failed');",
+      '}',
+    ],
+    bug: 3, why: 'Missing await — res is a Promise, so res.ok is always undefined.',
+  },
+  {
+    id: 'clamp-pct', name: 'progress.js',
+    lines: [
+      '// clamp progress between 0 and 100',
+      'function clampPct(v) {',
+      '  if (v < 0) return 0;',
+      '  if (v > 100) return 0;',
+      '  return v;',
+      '}',
+    ],
+    bug: 3, why: 'Values over 100 should clamp to 100, not reset to 0.',
+  },
+  {
+    id: 'error-window', name: 'slo.js',
+    lines: [
+      '// reset the 5xx counter every minute',
+      'function startWindow(state) {',
+      '  state.count = 0;',
+      '  setInterval(() => {',
+      '    state.count = 1;',
+      '  }, 60000);',
+      '}',
+    ],
+    bug: 4, why: 'The window resets the counter to 1, not 0 — errors are overcounted.',
+  },
+  {
+    id: 'latest-events', name: 'feed.js',
+    lines: [
+      '// return the newest N events, newest first',
+      'function latest(events, n) {',
+      '  return events',
+      '    .sort((a, b) => a.ts - b.ts)',
+      '    .slice(0, n);',
+      '}',
+    ],
+    bug: 3, why: 'a.ts - b.ts sorts oldest-first; newest-first needs b.ts - a.ts.',
+  },
+  {
+    id: 'rate-limit', name: 'limiter.js',
+    lines: [
+      '// allow at most `limit` requests per window',
+      'function allow(bucket, limit) {',
+      '  bucket.count += 1;',
+      '  return bucket.count < limit;',
+      '}',
+    ],
+    bug: 3, why: '< blocks the limit-th request — "at most limit" needs <=.',
+  },
+  {
+    id: 'days-between', name: 'dates.js',
+    lines: [
+      '// how many WHOLE days between two timestamps',
+      'function daysBetween(a, b) {',
+      '  const ms = Math.abs(b - a);',
+      '  return Math.round(ms / 86400000);',
+      '}',
+    ],
+    bug: 3, why: 'Math.round counts 2.6 days as 3 — whole days need Math.floor.',
+  },
+  {
+    id: 'strong-pw', name: 'signup.js',
+    lines: [
+      '// password needs a digit AND an uppercase letter',
+      'function isStrong(pw) {',
+      '  return /[0-9]/.test(pw) || /[A-Z]/.test(pw);',
+      '}',
+    ],
+    bug: 2, why: '|| accepts a password that has only one of the two requirements.',
+  },
+  {
+    id: 'display-name', name: 'users.js',
+    lines: [
+      "// find a user's display name, default to 'anon'",
+      'function displayName(users, id) {',
+      '  const u = users.find((x) => x.id === id);',
+      '  if (u.name) return u.name;',
+      "  return 'anon';",
+      '}',
+    ],
+    bug: 3, why: 'find() can return undefined — u.name crashes for unknown ids.',
+  },
+  {
+    id: 'fmt-cents', name: 'money.js',
+    lines: [
+      '// cents to a dollars string: 1205 -> "12.05"',
+      'function fmtCents(cents) {',
+      '  const d = Math.floor(cents / 100);',
+      '  const c = cents % 100;',
+      "  return d + '.' + c;",
+      '}',
+    ],
+    bug: 4, why: 'Cents below 10 lose their leading zero: 1205 becomes "12.5".',
+  },
+  {
+    id: 'paginate', name: 'pager.js',
+    lines: [
+      '// return page `p` (1-based) of `size` items',
+      'function page(items, p, size) {',
+      '  const start = p * size;',
+      '  return items.slice(start, start + size);',
+      '}',
+    ],
+    bug: 2, why: 'Page 1 should start at 0 — the offset needs (p - 1) * size.',
+  },
+  {
+    id: 'rollout', name: 'flags.js',
+    lines: [
+      '// roll out to 20% of users by id hash',
+      'function inRollout(id) {',
+      '  return hash(id) % 100 <= 20;',
+      '}',
+    ],
+    bug: 2, why: '<= 20 matches 21 buckets (0–20) — that is a 21% rollout.',
+  },
+  {
+    id: 'fifo-queue', name: 'worker.js',
+    lines: [
+      '// process jobs first-in, first-out',
+      'function nextJob(queue) {',
+      '  return queue.pop();',
+      '}',
+    ],
+    bug: 2, why: 'pop() takes the newest job (LIFO) — FIFO needs shift().',
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Triage tickets — customer requests & bug reports that must be routed to the
+// right priority. PMs get an instinct marker on the correct option.
+// `answer` indexes TRIAGE_OPTIONS.
+// ---------------------------------------------------------------------------
+
+export const TRIAGE_OPTIONS = ['P0 · page on-call', 'P1 · this sprint', 'P2 · backlog', 'Close · not a bug'];
+
+export const TRIAGE_TICKETS = [
+  { kind: 'bug', from: 'support', text: 'Checkout returns 500 for every user since the last deploy.', answer: 0, why: 'Full outage on the revenue path — that is a page.' },
+  { kind: 'bug', from: 'support', text: 'Login button misaligned by 2px in Safari 16.', answer: 2, why: 'Cosmetic, one browser — backlog it.' },
+  { kind: 'bug', from: 'support', text: "I can see another company's invoices in my dashboard.", answer: 0, why: 'Cross-tenant data leak is a security incident — page immediately.' },
+  { kind: 'bug', from: 'support', text: 'Password reset email arrives after 15 minutes.', answer: 1, why: 'Blocks users but has a workaround (waiting) — fix this sprint.' },
+  { kind: 'bug', from: 'support', text: 'Any file upload over 10MB crashes the app. Several customers blocked.', answer: 1, why: 'Real breakage for a common flow, but the app is otherwise up.' },
+  { kind: 'bug', from: 'support', text: "Dark mode looks 'too dark' at night, says one user.", answer: 3, why: 'Working as designed — politely close it.' },
+  { kind: 'bug', from: 'support', text: 'Site is slow from my hotel wifi. Everything else loads fine.', answer: 3, why: 'Environment issue on their side, not a product bug.' },
+  { kind: 'bug', from: 'support', text: 'Invoice totals off by $0.01 on about 3% of invoices.', answer: 1, why: 'Money correctness matters — but it is not an outage.' },
+  { kind: 'request', from: 'support', text: 'Enterprise customer (40% of revenue) blocked: SSO login broken since this morning.', answer: 0, why: 'Your biggest customer cannot log in at all — page it.' },
+  { kind: 'request', from: 'support', text: 'Two users ask for CSV export of reports.', answer: 2, why: 'Nice-to-have with low demand — backlog.' },
+  { kind: 'request', from: 'support', text: 'A customer demands we support Internet Explorer 11.', answer: 3, why: 'IE11 is dead. Close with kindness.' },
+  { kind: 'request', from: 'support', text: "Trial user: 'the onboarding tour never finishes, I can't use the product at all.'", answer: 1, why: 'Blocks new-user activation — high priority, not a page.' },
+  { kind: 'request', from: 'support', text: "Biggest customer's renewal is blocked on the audit-log feature promised last quarter.", answer: 1, why: 'Revenue-critical commitment — schedule it now; nothing is down.' },
+  { kind: 'request', from: 'support', text: "Anonymous email: 'your API keys are visible in the page source.'", answer: 0, why: 'Credible security report — treat as an incident and page.' },
+];
+
+// ---------------------------------------------------------------------------
 // Incident scenarios. These are *situations* the simulation creates; each has
 // a recovery goal evaluated against live sim state, not a magic dial combo.
-// `requires` gates the scenario on a service existing.
+// `requires` gates on a service existing; `requiresControl` gates on a dial
+// having been dealt to the team. `alert` is the vague pager line shown in
+// realism mode instead of the diagnosis.
 // ---------------------------------------------------------------------------
 
 export const INCIDENTS = {
   outage: {
     title: 'Backend pods crash-looping',
-    desc: 'OOMKilled. Again. Capacity just fell off a cliff.',
+    desc: 'Pods are OOMKilled seconds after start. Healthy capacity just fell off a cliff.',
     goal: 'Restart the crashed pods and recover from the overload',
     hint: 'Press "Restart Backend Pods" — add replicas if you\'re still saturated.',
+    alert: '5xx rate above SLO — no healthy backend endpoints behind the LB.',
     logs: [
       ['error', 'backend', 'pod backend-7f9c crashed: OOMKilled (exit 137)'],
       ['error', 'lb', 'upstream connect error: 503 no healthy endpoints'],
@@ -156,10 +382,49 @@ export const INCIDENTS = {
     desc: 'A celebrity posted our 404 page. Traffic is 4x baseline and climbing.',
     goal: 'Get backend utilization back under 90%',
     hint: 'Scale Backend Replicas, flip the Autoscaler ON, or raise Cache TTL to shed load.',
+    alert: 'Request rate 4× forecast — latency SLO at risk.',
     logs: [
       ['warn', 'lb', 'connection pool saturated ({n}% utilization)'],
       ['warn', 'backend', 'request queue depth {n}, shedding load'],
       ['info', 'cdn', 'cache MISS ratio climbing: {n}%'],
+    ],
+  },
+  memleak: {
+    title: 'Memory leak after the last deploy',
+    desc: 'RSS climbs every minute. GC pauses lengthen, throughput slowly decays.',
+    goal: 'Restart the backend pods to reclaim memory',
+    hint: 'Press "Restart Backend Pods" — a fresh boot resets the leak.',
+    alert: 'p95 latency creeping upward — memory pressure warnings on backend.',
+    logs: [
+      ['warn', 'backend', 'heap RSS {n}MB and climbing'],
+      ['warn', 'backend', 'GC major pause {n}ms'],
+      ['error', 'backend', 'allocation failure — heap near limit'],
+    ],
+  },
+  bad_deploy: {
+    title: 'Bad deploy in the canary',
+    desc: 'Error rate doubled minutes after the 14:02 deploy. Stack traces point at the new build.',
+    goal: 'Push a hotfix to roll back the bad build',
+    hint: 'Press "Push a Hotfix" on the engineer console.',
+    alert: 'Error budget burning 12× — errors correlate with the latest deploy.',
+    requiresControl: 'hotfix',
+    logs: [
+      ['error', 'backend', "TypeError: cannot read properties of undefined (build 14.2.0)"],
+      ['error', 'backend', '5xx on /api/checkout — release r{n}'],
+      ['warn', 'lb', 'canary error rate {n}% vs 1% baseline'],
+    ],
+  },
+  stampede: {
+    title: 'Cache stampede',
+    desc: 'A mass eviction sent every request straight to the database. Read latency is soaring.',
+    goal: 'Rebuild cache warmth above 70%',
+    hint: 'Raise Cache TTL so entries live long enough to rebuild the hit ratio. Do NOT flush.',
+    alert: 'Database IOPS 3× baseline — cache hit ratio collapsed.',
+    requires: 'cache',
+    logs: [
+      ['warn', 'cache', 'mass eviction: {n} keys expired simultaneously'],
+      ['error', 'db', 'connection pool exhausted ({n} waiting)'],
+      ['warn', 'db', 'read latency {n}ms — IOPS saturated'],
     ],
   },
   integration: {
@@ -167,6 +432,7 @@ export const INCIDENTS = {
     desc: 'Their status page says "operational". It is lying. Retries are piling up.',
     goal: 'Flip the circuit breaker to stop the retry storm',
     hint: 'Set Payments Circuit Breaker to ON — fail fast instead of queueing retries.',
+    alert: 'Checkout conversion collapsed — third-party call timeouts spiking.',
     requires: 'payments',
     logs: [
       ['error', 'payments', 'POST /v2/charge timeout after 30000ms'],
@@ -179,6 +445,7 @@ export const INCIDENTS = {
     desc: 'A batch import dumped a mountain of jobs. Consumers are drowning.',
     goal: 'Drain the queue below 60 jobs',
     hint: 'Max out Queue Drain Rate. If payments are flaky too, the circuit breaker helps.',
+    alert: 'Job queue oldest-message age above 10 minutes and rising.',
     requires: 'queue',
     logs: [
       ['warn', 'queue', 'backlog depth {n} (threshold: 200)'],
@@ -186,17 +453,50 @@ export const INCIDENTS = {
       ['warn', 'backend', 'enqueue latency {n}ms'],
     ],
   },
+  ddos: {
+    title: 'Bot flood at the edge',
+    desc: 'A botnet is hammering the login endpoint with junk traffic from thousands of IPs.',
+    goal: 'Raise Firewall Strictness to 6+ to shed the bot traffic',
+    hint: 'Crank Firewall Strictness — real users can live with a captcha for a while.',
+    alert: 'Request rate anomaly — 80% of traffic from unrecognized ASNs.',
+    requiresControl: 'firewall',
+    logs: [
+      ['warn', 'lb', '{n} rps from ASN 64496 — traffic pattern anomaly'],
+      ['error', 'backend', 'auth failures spiking: {n}/min'],
+      ['warn', 'lb', 'connection table {n}% full'],
+    ],
+  },
   failover: {
     title: 'Region outage',
     desc: 'The cloud provider tweeted an apology. Your primary region is gone.',
-    goal: 'Update the DNS records to point at a healthy region',
-    hint: 'Switch DNS Primary Record to any other region.',
+    goal: 'Fail DNS over to a healthy region, then ride out propagation',
+    hint: 'Switch DNS Primary Record — expect ~8s of TTL propagation, and add replicas: the standby region is cold.',
+    alert: 'Health checks failing region-wide — packet loss on primary.',
     logs: [
       ['error', 'dns', 'health check failing for primary record ({n}% packet loss)'],
       ['error', 'db', 'replica lag {n}s and climbing'],
       ['warn', 'lb', 'health checks failing in primary region: {n}%'],
     ],
   },
+  data_loss: {
+    title: 'Database corruption',
+    desc: 'A bad migration tore through the orders table. Writes are failing integrity checks.',
+    goal: 'Restore the database from backup (restore takes ~10s)',
+    hint: 'Press "Restore DB from Backup". Your Backup Frequency dial decides how much data you lose.',
+    alert: 'Write errors storming — database integrity checks failing.',
+    logs: [
+      ['error', 'db', 'integrity check failed: {n} pages corrupt'],
+      ['error', 'backend', 'write failed: constraint violation storm'],
+      ['warn', 'db', 'replica diverged — halting replication'],
+    ],
+  },
+};
+
+export const INCIDENT_LABELS = {
+  outage: 'Crash-loop outages', spike: 'Traffic spikes', memleak: 'Memory leaks',
+  bad_deploy: 'Bad deploys', stampede: 'Cache stampedes', integration: 'Integration failures',
+  queue: 'Queue backlogs', ddos: 'Bot floods', failover: 'Regional failovers',
+  data_loss: 'DB corruption (DR drill)',
 };
 
 // ---------------------------------------------------------------------------

@@ -84,6 +84,9 @@ export function send(msg) {
 export const sendChat = (text) => send({ t: 'chat', text });
 export const setControl = (key, value) => send({ t: 'control', key, value });
 export const pressButton = (key) => send({ t: 'control', key, press: true });
+export const guessCodeLine = (taskId, line) => send({ t: 'code_guess', taskId, line });
+export const pickTriage = (taskId, choice) => send({ t: 'triage_pick', taskId, choice });
+export const requestHint = () => send({ t: 'hint' });
 export const setRole = (role) => send({ t: 'set_role', role });
 export const setConfig = (p) => send({ t: 'config', patch: p });
 export const startGame = () => send({ t: 'start' });

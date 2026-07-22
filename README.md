@@ -7,16 +7,34 @@ Ship features, squash bugs, and resolve production incidents — by shouting
 across the room.
 
 - **Roles**: Product Manager, Designer, Engineer, Ops/SRE — plus a **Spectator**
-  dashboard designed for a projector.
+  dashboard designed for a projector. Roles carry perks: Engineers get a
+  debugger lens that marks the buggy line in code-review missions, PMs get an
+  instinct marker on ticket-triage calls.
+- **Three game modes**: **Arcade** (incidents tell you exactly which dials to
+  turn — pure party), **Assisted** (you see the goal, hints cost points), and
+  **Realism** (only a vague pager alert — read the graphs, find the failing
+  component, fix it yourselves).
 - **Team tools**: Kanban board, Slack-lookalike chat (with `ceo-dave`,
   `customer-support`, and `pagerbot`), logs / metrics / traces observability
-  view, and a live infrastructure map.
+  view, and a live infrastructure map — switched via a left app navbar on
+  desktop, bottom tabs on mobile.
+- **Mission variety**: dial-turning Spaceteam missions, **find-the-bug code
+  reviews** (spot the subtly broken line to ship features, fix bugs, or stand up
+  a new microservice), and **ticket triage** (route customer requests and bug
+  reports to the right priority).
 - **A real load simulation**: RPS demand vs. replica capacity drives
   utilization, latency, and error rates. Incidents are *situations* — a traffic
   spike overloads the backend until you scale out, a dead payments provider
-  floods the queue until someone flips the circuit breaker, a region outage
-  hurts until you repoint the DNS records. Recovery is judged by the system
-  actually recovering, not by magic dial combos.
+  floods the queue until someone flips the circuit breaker, a memory leak decays
+  throughput until you restart the pods, a cache stampede hammers the DB until
+  TTLs rebuild warmth, a bad deploy burns error budget until an engineer pushes
+  a hotfix, a bot flood floods the edge until the firewall gets strict.
+  Recovery is judged by the system actually recovering, not by magic dial
+  combos.
+- **Disaster recovery, for real**: regional failovers require repointing DNS and
+  riding out TTL propagation while the cold standby region scales up; database
+  corruption requires restoring from backup — a ~10 s RTO, with data loss (RPO)
+  decided by how aggressive your Backup Frequency dial was.
 - **A growing platform**: you start with a core stack (DNS → LB → frontend /
   backend → DB, more on higher difficulty); shipping epic features deploys new
   services (cache, queue, payments, search, …) — more infra, more failure modes.
@@ -33,7 +51,7 @@ across the room.
 
 - **Client**: React 19 + Tailwind CSS v4 (Vite), minimalist design system with
   light/dark mode. Fully responsive — phones get a bottom-nav console, desktop
-  gets resizable split panes (react-resizable-panels) and the React Flow
+  gets a left app navbar with per-view badges and the React Flow
   (@xyflow/react) architecture diagram.
 - **Server**: Cloudflare Worker serving the SPA, with one SQLite-backed
   **Durable Object per room** for coordination — WebSocket hibernation for

@@ -127,4 +127,11 @@ input[type="range"]::-moz-range-thumb {
 }
 .animate-blink { animation: dt-blink 1s step-start infinite; }
 
+@keyframes dt-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+.animate-shake { animation: dt-shake 0.22s ease-in-out; }
+
 .transition-bar { transition: width 1s linear; }

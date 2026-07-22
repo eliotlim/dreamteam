@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ROLE_META, INCIDENTS, SERVICES } from '../../shared/content.js';
+import { ROLE_META, INCIDENTS, INCIDENT_LABELS, SERVICES, MODES, CONTROL_POOL } from '../../shared/content.js';
 import {
   Button, Card, Badge, Avatar, Switch, Seg, ThemeToggle, SectionLabel, Dot, cx,
 } from '../components/ui.jsx';
@@ -7,11 +7,6 @@ import { setRole, setConfig, startGame } from '../lib/net.js';
 import { useStore } from '../lib/store.js';
 
 const ROLE_CHOICES = ['pm', 'designer', 'engineer', 'ops', 'spectator'];
-
-const INCIDENT_LABELS = {
-  outage: 'Outages', spike: 'Traffic spikes', integration: 'Integration failures',
-  queue: 'Queue backlogs', failover: 'Regional failovers',
-};
 
 const PRESET_BLURB = {
   chill: 'Slow pace, forgiving deadlines, 5 starting services.',
@@ -168,14 +163,24 @@ export default function Lobby() {
             />
             <p className="text-xs text-faint pt-1 pb-2 min-h-9">{PRESET_BLURB[cfg.preset] || PRESET_BLURB.custom}</p>
 
+            <div className="border-t border-line pt-3 pb-1 space-y-1">
+              <SectionLabel>Mode</SectionLabel>
+              <Seg
+                options={Object.entries(MODES).map(([value, m]) => ({ value, label: m.label }))}
+                value={cfg.mode}
+                onChange={(mode) => setConfig({ mode })}
+                className="w-full justify-center"
+                size="sm"
+              />
+              <p className="text-xs text-faint pt-1 min-h-9">{MODES[cfg.mode]?.blurb}</p>
+            </div>
+
             <div className="border-t border-line">
               <NumberSetting label="Sprints" value={cfg.sprintCount} min={1} max={10}
                 onChange={(v) => setConfig({ sprintCount: v })} />
             </div>
 
             <div className="divide-y divide-line border-t border-line">
-              <ToggleSetting label="Hints" desc="incidents suggest which dials help"
-                checked={cfg.hints} onChange={(on) => setConfig({ hints: on })} />
               <ToggleSetting label="Bot chatter" desc="ceo-dave & customer-support in chat"
                 checked={cfg.botChatter} onChange={(on) => setConfig({ botChatter: on })} />
             </div>
@@ -208,6 +213,10 @@ export default function Lobby() {
                     onChange={(v) => setConfig({ maxActivePerPlayer: v })} />
                   <NumberSetting label="Bug ratio" value={cfg.bugChance} min={0} max={1} step={0.05}
                     onChange={(v) => setConfig({ bugChance: v })} />
+                  <NumberSetting label="Code review ratio" value={cfg.codeChance} min={0} max={0.6} step={0.05}
+                    onChange={(v) => setConfig({ codeChance: v })} />
+                  <NumberSetting label="Triage ratio" value={cfg.triageChance} min={0} max={0.6} step={0.05}
+                    onChange={(v) => setConfig({ triageChance: v })} />
                   <NumberSetting label="Miss penalty" value={cfg.missPenalty} min={0} max={25} suffix=" hp"
                     onChange={(v) => setConfig({ missPenalty: v })} />
                   <NumberSetting label="Incident drain" value={cfg.incidentDrainPerSec} min={0} max={3} step={0.1} suffix="/s"
@@ -221,9 +230,14 @@ export default function Lobby() {
                   {Object.keys(INCIDENTS).map((k) => (
                     <label key={k} className="flex items-center justify-between py-1">
                       <span className="text-sm text-subtle">
-                        {INCIDENT_LABELS[k]}
+                        {INCIDENT_LABELS[k] || k}
                         {INCIDENTS[k].requires && (
                           <span className="text-xs text-faint"> (needs {SERVICES[INCIDENTS[k].requires].label})</span>
+                        )}
+                        {INCIDENTS[k].requiresControl && (
+                          <span className="text-xs text-faint">
+                            {' '}(needs “{CONTROL_POOL.find((c) => c.key === INCIDENTS[k].requiresControl)?.label}” dealt)
+                          </span>
                         )}
                       </span>
                       <Switch

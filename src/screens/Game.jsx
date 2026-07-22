@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Card, Badge, Progress, ThemeToggle, Avatar, Button, Overlay, Stat, cx } from '../components/ui.jsx';
 import { useNow, fmtClock } from '../lib/hooks.js';
@@ -98,9 +98,10 @@ function ReviewOverlay() {
           <h2 className="text-2xl font-bold">Sprint {g.sprint} review</h2>
           <p className="text-subtle text-sm mt-1">Deep breath. Retro later. More shipping now.</p>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
           <Stat label="Shipped" value={st.shipped ?? 0} tone="accent" />
           <Stat label="Bugs fixed" value={st.bugsFixed ?? 0} tone="ok" />
+          <Stat label="Triaged" value={st.triaged ?? 0} tone="info" />
           <Stat label="Incidents" value={st.incidentsResolved ?? 0} tone="warn" />
           <Stat label="Missed" value={st.missed ?? 0} tone="danger" />
         </div>
@@ -135,61 +136,90 @@ function ResizeV() {
   );
 }
 
-const CENTER_TABS = [
-  { id: 'board', label: '📌 Board' },
-  { id: 'obs', label: '🔭 Observability' },
-  { id: 'infra', label: '🏗️ Infra' },
+// --------------------------------------------------------------- player views
+
+// Desktop: a left navbar switches between the "apps" of the company —
+// console, board, observability, infra and chat.
+const APP_VIEWS = [
+  { id: 'console', label: 'Console', icon: '🎛️' },
+  { id: 'board', label: 'Board', icon: '📌' },
+  { id: 'obs', label: 'Observe', icon: '🔭' },
+  { id: 'infra', label: 'Infra', icon: '🏗️' },
+  { id: 'chat', label: 'Chat', icon: '💬' },
 ];
 
-function CenterTabs() {
-  const s = useStore();
-  const [tab, setTab] = useState('board');
-  const badNodes = Object.values(s.g.nodes || {}).filter((n) => n.s !== 'ok').length;
+function NavRail({ view, setView, badges }) {
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="flex gap-1 border-b border-line shrink-0">
-        {CENTER_TABS.map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)}
-            className={cx(
-              'px-3.5 py-2 text-sm font-medium transition-colors relative cursor-pointer -mb-px border-b-2',
-              tab === t.id ? 'text-ink border-accent' : 'text-subtle hover:text-ink border-transparent',
-            )}>
-            {t.label}
-            {t.id === 'infra' && badNodes > 0 && (
-              <span className="ml-1.5 px-1.5 py-px rounded-full bg-danger text-white text-[10px] font-bold">{badNodes}</span>
+    <nav className="w-[72px] shrink-0 border-r border-line bg-surface/60 flex flex-col items-center gap-1 py-3">
+      {APP_VIEWS.map((v) => (
+        <button
+          key={v.id}
+          onClick={() => setView(v.id)}
+          className={cx(
+            'w-16 py-2 rounded-xl flex flex-col items-center gap-1 cursor-pointer transition-colors',
+            view === v.id ? 'bg-accent-soft text-accent' : 'text-subtle hover:text-ink hover:bg-raised',
+          )}
+        >
+          <span className="text-xl leading-none relative">
+            {v.icon}
+            {badges[v.id] > 0 && (
+              <span className="absolute -top-1.5 -right-3 min-w-4 h-4 px-0.5 rounded-full bg-danger text-white text-[9px] font-bold flex items-center justify-center">
+                {badges[v.id]}
+              </span>
             )}
-          </button>
-        ))}
-      </div>
-      <div className="flex-1 min-h-0 pt-3 overflow-y-auto">
-        {tab === 'board' && <Board />}
-        {tab === 'obs' && <Obs />}
-        {tab === 'infra' && <Infra full />}
-      </div>
-    </div>
+          </span>
+          <span className="text-[10px] font-semibold">{v.label}</span>
+        </button>
+      ))}
+    </nav>
   );
 }
 
-// --------------------------------------------------------------- player views
-
 function PlayerDesktop() {
+  const s = useStore();
+  const [view, setView] = useState('console');
+  const g = s.g;
+  const myTasks = g.tasks.filter((t) => t.displayPid === s.you).length;
+  const badNodes = Object.values(g.nodes || {}).filter((n) => n.s !== 'ok').length;
+  const lastChatTs = g.chat.at(-1)?.ts ?? 0;
+  const chatSeenTs = useRef(lastChatTs);
+  useEffect(() => {
+    if (view === 'chat') chatSeenTs.current = lastChatTs;
+  }, [view, lastChatTs]);
+  const badges = {
+    console: myTasks + (g.incident ? 1 : 0),
+    infra: badNodes,
+    chat: view === 'chat' ? 0 : g.chat.filter((m) => m.ts > chatSeenTs.current).length,
+  };
+
   return (
-    <PanelGroup direction="horizontal" autoSaveId="dt-player" className="flex-1 min-h-0 p-3">
-      <Panel defaultSize={27} minSize={22} className="min-w-0">
-        <div className="h-full overflow-y-auto space-y-3 pr-1">
-          <Missions />
-          <Controls />
-        </div>
-      </Panel>
-      <ResizeH />
-      <Panel defaultSize={46} minSize={30} className="min-w-0">
-        <CenterTabs />
-      </Panel>
-      <ResizeH />
-      <Panel defaultSize={27} minSize={18} className="min-w-0">
-        <Card className="h-full overflow-hidden"><Chat /></Card>
-      </Panel>
-    </PanelGroup>
+    <div className="flex-1 min-h-0 flex">
+      <NavRail view={view} setView={setView} badges={badges} />
+      <div className="flex-1 min-w-0 min-h-0">
+        {view === 'console' && (
+          <div className="h-full overflow-y-auto p-4">
+            <div className="max-w-5xl mx-auto space-y-3">
+              <TeamStrip />
+              <div className="grid lg:grid-cols-[minmax(320px,420px)_1fr] gap-4 items-start">
+                <Missions />
+                <div className="space-y-3">
+                  <Controls />
+                  <MetricsGrid compact />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        {view === 'board' && <div className="h-full overflow-y-auto p-4"><Board /></div>}
+        {view === 'obs' && <div className="h-full p-4"><Obs /></div>}
+        {view === 'infra' && <div className="h-full p-4"><Infra full /></div>}
+        {view === 'chat' && (
+          <div className="h-full p-4">
+            <Card className="h-full max-w-3xl mx-auto overflow-hidden"><Chat /></Card>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

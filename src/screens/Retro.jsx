@@ -28,9 +28,10 @@ export default function Retro() {
           </div>
 
           <Card className="p-6 space-y-5">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-center">
               <Stat label="Shipped" value={st.shipped} tone="accent" />
               <Stat label="Bugs fixed" value={st.bugsFixed} tone="ok" />
+              <Stat label="Triaged" value={st.triaged ?? 0} tone="info" />
               <Stat label="Incidents" value={st.incidentsResolved} tone="warn" />
               <Stat label="Missed" value={st.missed} tone="danger" />
             </div>

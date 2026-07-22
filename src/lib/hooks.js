@@ -1,0 +1,29 @@
+import { useEffect, useRef, useState } from 'react';
+import { serverNow } from './store.js';
+
+// server-adjusted clock, ticking every `ms`
+export function useNow(ms = 500) {
+  const [now, setNow] = useState(serverNow);
+  useEffect(() => {
+    const id = setInterval(() => setNow(serverNow()), ms);
+    return () => clearInterval(id);
+  }, [ms]);
+  return now;
+}
+
+export function fmtClock(msRemaining) {
+  const s = Math.max(0, Math.ceil(msRemaining / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+// keep a scrollable element pinned to the bottom as content streams in
+export function useAutoScroll(dep) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
+  }, [dep]);
+  return ref;
+}

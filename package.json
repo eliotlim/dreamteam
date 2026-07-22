@@ -1,24 +1,30 @@
 {
   "name": "dreamteam",
-  "version": "1.0.0",
-  "description": "",
-  "main": "server.js",
+  "version": "2.0.0",
+  "description": "DreamTeam — a SpaceTeam-style co-op game about the product development cycle. React + Tailwind on Cloudflare Workers with SQLite Durable Objects.",
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "vite build && wrangler deploy"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/eliotlim/dreamteam.git"
   },
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/eliotlim/dreamteam/issues"
-  },
-  "homepage": "https://github.com/eliotlim/dreamteam#readme",
+  "license": "MIT",
   "dependencies": {
-    "express": "^4.17.1",
-    "react": "^16.12.0",
-    "socket.io": "^2.3.0"
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.9.0",
+    "@tailwindcss/vite": "^4.1.11",
+    "@vitejs/plugin-react": "^4.6.0",
+    "tailwindcss": "^4.1.11",
+    "vite": "^7.0.0",
+    "wrangler": "^4.24.0"
   }
 }

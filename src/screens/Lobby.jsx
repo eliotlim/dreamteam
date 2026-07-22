@@ -183,6 +183,8 @@ export default function Lobby() {
             <div className="divide-y divide-line border-t border-line">
               <ToggleSetting label="Bot chatter" desc="ceo-dave & customer-support in chat"
                 checked={cfg.botChatter} onChange={(on) => setConfig({ botChatter: on })} />
+              <ToggleSetting label="Mega mode" desc="crowd play: dials are duplicated across screens and missions need a quorum of teammates"
+                checked={!!cfg.megaMode} onChange={(on) => setConfig({ megaMode: on })} />
             </div>
 
             <button

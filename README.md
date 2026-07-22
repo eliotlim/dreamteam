@@ -14,6 +14,10 @@ across the room.
   turn — pure party), **Assisted** (you see the goal, hints cost points), and
   **Realism** (only a vague pager alert — read the graphs, find the failing
   component, fix it yourselves).
+- **Mega mode** (lobby toggle): crowd play for big groups — pool dials are
+  duplicated across many screens and dial missions demand a **quorum** ("Set
+  Backup Frequency to 3 — 4 of 6 needed"), so the whole room has to move
+  together.
 - **Team tools**: Kanban board, Slack-lookalike chat (with `ceo-dave`,
   `customer-support`, and `pagerbot`), logs / metrics / traces observability
   view, and a live infrastructure map — switched via a left app navbar on

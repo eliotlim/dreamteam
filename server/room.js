@@ -20,6 +20,7 @@ const CRITICAL_INIT = {
 export const DEFAULT_CONFIG = {
   preset: 'standard',
   mode: 'arcade',         // arcade | assisted | realism — how much the game tells you
+  megaMode: false,        // crowd play: dials duplicated, missions need a quorum
   botChatter: true,       // flavor bots in chat
   codeChance: MODES.arcade.codeChance,       // chance a task is a find-the-bug code review
   triageChance: MODES.arcade.triageChance,   // chance a task is a ticket triage
@@ -359,13 +360,14 @@ export class GameRoom extends DurableObject {
     num('codeChance', 0, 1);
     num('triageChance', 0, 1);
     if (typeof patch.botChatter === 'boolean') c.botChatter = patch.botChatter;
+    if (typeof patch.megaMode === 'boolean') c.megaMode = patch.megaMode;
     if (patch.incidents && typeof patch.incidents === 'object') {
       for (const k of Object.keys(INCIDENTS)) {
         if (typeof patch.incidents[k] === 'boolean') c.incidents[k] = patch.incidents[k];
       }
     }
     // mode & botChatter are orthogonal to pacing — only knob changes mark the preset custom
-    const cosmetic = ['preset', 'mode', 'botChatter'];
+    const cosmetic = ['preset', 'mode', 'botChatter', 'megaMode'];
     if (typeof patch.preset !== 'string' && Object.keys(patch).some((k) => !cosmetic.includes(k))) {
       c.preset = 'custom';
     }
@@ -434,11 +436,37 @@ export class GameRoom extends DurableObject {
 
   dealAllControls() {
     const players = this.activePlayers();
+    const cfg = this.g.config;
     for (const p of players) p.controls = [];
     const byLoad = () => [...players].sort((a, b) => a.controls.length - b.controls.length);
     for (const def of shuffle(CRITICAL_CONTROLS)) {
       const match = byLoad().find((p) => p.role === def.role);
       (match || byLoad()[0]).controls.push(this.instantiate(def, true));
+    }
+    if (cfg.megaMode) {
+      // mega mode: deal a small set of pool dials round-robin so every dial
+      // lives on ~2+ screens — missions then demand a quorum of holders
+      const slots = players.reduce(
+        (n, p) => n + Math.max(0, cfg.controlsPerPlayer - p.controls.length), 0);
+      const nKeys = clamp(Math.ceil(slots / 2), 2, CONTROL_POOL.length);
+      const chosen = shuffle(CONTROL_POOL).slice(0, nKeys);
+      let ci = 0;
+      let progress = true;
+      while (progress) {
+        progress = false;
+        for (const p of byLoad()) {
+          if (p.controls.length >= cfg.controlsPerPlayer) continue;
+          for (let k = 0; k < chosen.length; k++) {
+            const def = chosen[(ci + k) % chosen.length];
+            if (p.controls.some((c) => c.key === def.key)) continue;
+            p.controls.push(this.instantiate(def, false));
+            ci = (ci + k + 1) % chosen.length;
+            progress = true;
+            break;
+          }
+        }
+      }
+      return;
     }
     const pool = shuffle(CONTROL_POOL);
     for (const p of players) {
@@ -454,9 +482,19 @@ export class GameRoom extends DurableObject {
   }
 
   dealPoolControls(p) {
+    const cfg = this.g.config;
     const taken = new Set(
       Object.values(this.g.players).flatMap((x) => x.controls.map((c) => c.key)),
     );
+    if (cfg.megaMode) {
+      // late joiners swell the existing quorum pools before drawing new dials
+      const dealt = shuffle(CONTROL_POOL.filter((d) => taken.has(d.key)));
+      const fresh = shuffle(CONTROL_POOL.filter((d) => !taken.has(d.key)));
+      p.controls = [...dealt, ...fresh]
+        .slice(0, cfg.controlsPerPlayer)
+        .map((d) => this.instantiate(d, false));
+      return;
+    }
     const pool = shuffle(CONTROL_POOL).filter((d) => !taken.has(d.key));
     const preferred = pool.filter((d) => d.role === p.role);
     const rest = pool.filter((d) => d.role !== p.role);
@@ -867,6 +905,9 @@ export class GameRoom extends DurableObject {
     if (roll < g.config.triageChance && this.spawnTriageTask(displays)) return;
     if (roll < g.config.triageChance + g.config.codeChance && this.spawnCodeTask(displays)) return;
 
+    // mega mode: dial missions demand a quorum of holders instead of one owner
+    if (g.config.megaMode && this.spawnQuorumTask(displays)) return;
+
     // tasks only target mission dials (pool controls) — the ops console is
     // reserved for running the actual system
     const targeted = this.targetedControls();
@@ -905,6 +946,63 @@ export class GameRoom extends DurableObject {
     if (isBug && g.config.botChatter && Math.random() < 0.5) {
       this.botSay('support', `New ticket: "${item.title}" — 3 customers affected 📩`);
     }
+  }
+
+  // Mega-mode dial mission: the same dial lives on several screens and the
+  // mission only completes once enough holders perform the action.
+  spawnQuorumTask(displays) {
+    const g = this.g;
+    const players = this.activePlayers();
+    const targeted = this.targetedControls();
+    const holders = {};
+    for (const p of players) {
+      for (const c of p.controls) {
+        if (!c.crit && !targeted.has(c.key)) (holders[c.key] ??= []).push({ p, c });
+      }
+    }
+    const candidates = Object.entries(holders).filter(([, hs]) => hs.length >= 2);
+    if (!candidates.length) return false;
+    const [key, hs] = pick(candidates);
+    const sample = hs[0].c;
+
+    let target = 1;
+    if (sample.type === 'toggle') {
+      // aim at whichever state the minority holds so it's never pre-satisfied
+      const ones = hs.filter(({ c }) => c.value === 1).length;
+      target = ones * 2 >= hs.length ? 0 : 1;
+    }
+    if (sample.type === 'slider') { do { target = (sample.min ?? 0) + rnd(sample.max - (sample.min ?? 0) + 1); } while (target === sample.value); }
+    if (sample.type === 'select') { do { target = rnd(sample.options.length); } while (target === sample.value); }
+
+    const required = Math.max(2, Math.ceil(hs.length * 0.6));
+    const have = sample.type === 'button' ? 0 : hs.filter(({ c }) => c.value === target).length;
+    const isBug = Math.random() < g.config.bugChance;
+    const item = this.pickBacklogItem(isBug);
+    const display = this.pickDisplay(displays);
+
+    const task = {
+      id: uid(),
+      kind: isBug ? 'bug' : 'feature',
+      title: item.title,
+      epicService: !isBug && item.service && !g.services.includes(item.service) ? item.service : null,
+      instr: sample.type === 'button'
+        ? `${required} teammates: press ${sample.label}`
+        : `${instructionFor(sample, target)} — ${required} of ${hs.length} needed`,
+      quorum: { required, have, holders: hs.length },
+      pressedBy: [],
+      displayPid: display.id,
+      ownerPid: display.id,
+      ownerName: 'the crowd',
+      controlKey: key,
+      target,
+      createdAt: Date.now(),
+      deadlineAt: Date.now() + this.taskDeadline(1.5),
+      status: 'active',
+      points: isBug ? 100 : 120,
+    };
+    g.tasks.push(task);
+    this.broadcast({ t: 'task', task });
+    return true;
   }
 
   // Find-the-bug code review. The buggy line index ships with the task;
@@ -1193,9 +1291,26 @@ export class GameRoom extends DurableObject {
       this.broadcast({ t: 'control', pid: p.id, key, value });
     }
 
+    // mega mode: quorum missions count actions from every holder of the dial
+    for (const task of g.tasks.filter((t) => t.quorum && t.controlKey === key)) {
+      if (control.type === 'button') {
+        if (press && !task.pressedBy.includes(p.id)) task.pressedBy.push(p.id);
+        task.quorum.have = task.pressedBy.length;
+      } else {
+        let have = 0;
+        for (const pl of this.activePlayers()) {
+          const copy = pl.controls.find((c) => c.key === key);
+          if (copy && copy.value === task.target) have++;
+        }
+        task.quorum.have = have;
+      }
+      if (task.quorum.have >= task.quorum.required) this.completeTask(task);
+      else this.broadcast({ t: 'task', task });
+    }
+
     const effective = control.type === 'button' ? 1 : control.value;
     const match = g.tasks
-      .filter((t) => t.ownerPid === p.id && t.controlKey === key && t.target === effective)
+      .filter((t) => !t.quorum && t.ownerPid === p.id && t.controlKey === key && t.target === effective)
       .sort((a, b) => a.createdAt - b.createdAt)[0];
     if (match) this.completeTask(match);
 

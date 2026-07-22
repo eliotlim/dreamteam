@@ -89,7 +89,7 @@ export default function Infra({ full = false }) {
           edges={flowEdges}
           nodeTypes={nodeTypes}
           fitView
-          fitViewOptions={{ padding: 0.15 }}
+          fitViewOptions={{ padding: 0.2 }}
           zoomOnScroll={false}
           zoomOnDoubleClick={false}
           panOnDrag={false}

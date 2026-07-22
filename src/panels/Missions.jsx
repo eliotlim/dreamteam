@@ -31,6 +31,19 @@ function Deadline({ task, now }) {
   };
 }
 
+function QuorumDots({ quorum }) {
+  return (
+    <span className="inline-flex items-center gap-1" title={`${quorum.have}/${quorum.required} teammates`}>
+      <span className="text-[10px] font-bold text-accent">👥 {quorum.have}/{quorum.required}</span>
+      <span className="inline-flex gap-0.5">
+        {Array.from({ length: quorum.required }, (_, i) => (
+          <span key={i} className={cx('size-1.5 rounded-full', i < quorum.have ? 'bg-accent' : 'bg-line-strong')} />
+        ))}
+      </span>
+    </span>
+  );
+}
+
 function MissionCard({ task, now }) {
   const meta = KIND_META[task.kind];
   const d = Deadline({ task, now });
@@ -45,7 +58,10 @@ function MissionCard({ task, now }) {
         <div className="text-xs text-subtle truncate" title={task.title}>{task.title}</div>
         <div className="text-[15px] font-semibold leading-snug line-clamp-2">{task.instr}</div>
       </div>
-      <Progress value={d.pct} tone={d.urgent ? 'danger' : meta.tone} />
+      <div className="flex items-center gap-2">
+        <Progress value={d.pct} tone={d.urgent ? 'danger' : meta.tone} className="flex-1" />
+        {task.quorum && <QuorumDots quorum={task.quorum} />}
+      </div>
     </Card>
   );
 }

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ROLE_META, INCIDENTS } from '../../shared/content.js';
+import { ROLE_META, INCIDENTS, SERVICES } from '../../shared/content.js';
 import {
   Button, Card, Badge, Avatar, Switch, Seg, ThemeToggle, SectionLabel, Dot, cx,
 } from '../components/ui.jsx';
@@ -13,6 +13,13 @@ const INCIDENT_LABELS = {
   queue: 'Queue backlogs', failover: 'Regional failovers',
 };
 
+const PRESET_BLURB = {
+  chill: 'Slow pace, forgiving deadlines, 5 starting services.',
+  standard: 'The intended experience. 7 starting services.',
+  chaos: 'Fast, punishing, 8 starting services. Bring earplugs.',
+  custom: 'Custom settings — you know what you did.',
+};
+
 function NumberSetting({ label, value, onChange, min, max, step = 1, suffix }) {
   return (
     <label className="flex items-center justify-between gap-3 py-1.5">
@@ -21,12 +28,24 @@ function NumberSetting({ label, value, onChange, min, max, step = 1, suffix }) {
         <input
           type="range" min={min} max={max} step={step} value={value}
           onChange={(e) => onChange(Number(e.target.value))}
-          className="w-28"
+          className="w-24 sm:w-28"
         />
-        <span className="text-sm font-semibold tabular-nums w-14 text-right">
+        <span className="text-sm font-semibold tabular-nums w-13 text-right">
           {value}{suffix}
         </span>
       </span>
+    </label>
+  );
+}
+
+function ToggleSetting({ label, desc, checked, onChange }) {
+  return (
+    <label className="flex items-center justify-between gap-3 py-2">
+      <span>
+        <span className="text-sm font-medium block">{label}</span>
+        {desc && <span className="text-xs text-faint">{desc}</span>}
+      </span>
+      <Switch checked={checked} onChange={onChange} />
     </label>
   );
 }
@@ -58,20 +77,20 @@ export default function Lobby() {
         <ThemeToggle />
       </header>
 
-      <main className="flex-1 w-full max-w-5xl mx-auto px-5 pb-10 grid gap-5 md:grid-cols-[1fr_360px] content-start">
+      <main className="flex-1 w-full max-w-5xl mx-auto px-4 sm:px-5 pb-10 grid gap-5 md:grid-cols-[1fr_360px] content-start">
         {/* left: room + players */}
         <div className="space-y-5">
-          <Card className="p-6 flex items-center justify-between gap-4 flex-wrap">
+          <Card className="p-5 sm:p-6 flex items-center justify-between gap-4 flex-wrap">
             <div>
               <SectionLabel>Room code</SectionLabel>
-              <div className="text-4xl font-mono font-bold tracking-[0.25em] mt-1">{g.code}</div>
+              <div className="text-3xl sm:text-4xl font-mono font-bold tracking-[0.25em] mt-1">{g.code}</div>
             </div>
             <Button variant="outline" onClick={copyLink}>
               {copied ? 'Copied ✓' : 'Copy invite link'}
             </Button>
           </Card>
 
-          <Card className="p-6 space-y-4">
+          <Card className="p-5 sm:p-6 space-y-4">
             <div className="flex items-center justify-between">
               <SectionLabel>Team ({players.filter((p) => p.connected).length})</SectionLabel>
               {activeCount === 0 && <Badge tone="warn">need at least 1 non-spectator</Badge>}
@@ -87,7 +106,7 @@ export default function Lobby() {
                     {!p.connected && <span className="text-faint text-xs ml-2">offline</span>}
                   </span>
                   <span className="text-sm text-subtle whitespace-nowrap">
-                    {ROLE_META[p.role].icon} {ROLE_META[p.role].label}
+                    {ROLE_META[p.role].icon} <span className="hidden sm:inline">{ROLE_META[p.role].label}</span>
                   </span>
                 </li>
               ))}
@@ -101,7 +120,7 @@ export default function Lobby() {
                     key={r}
                     onClick={() => setRole(r)}
                     className={cx(
-                      'px-3 py-1.5 rounded-xl text-sm font-medium border transition cursor-pointer',
+                      'px-3 py-2 rounded-xl text-sm font-medium border transition cursor-pointer',
                       me?.role === r
                         ? 'border-accent bg-accent-soft text-accent'
                         : 'border-line text-subtle hover:text-ink hover:bg-raised',
@@ -129,13 +148,13 @@ export default function Lobby() {
         </div>
 
         {/* right: settings */}
-        <Card className="p-6 space-y-4 h-fit">
+        <Card className="p-5 sm:p-6 space-y-4 h-fit">
           <div className="flex items-center justify-between">
             <SectionLabel>Game settings</SectionLabel>
             {!isHost && <Badge>host only</Badge>}
           </div>
 
-          <div className={cx(!isHost && 'opacity-60 pointer-events-none', 'space-y-4')}>
+          <div className={cx(!isHost && 'opacity-60 pointer-events-none', 'space-y-1')}>
             <Seg
               options={[
                 { value: 'chill', label: '🌴 Chill' },
@@ -147,30 +166,42 @@ export default function Lobby() {
               className="w-full justify-center"
               size="sm"
             />
+            <p className="text-xs text-faint pt-1 pb-2 min-h-9">{PRESET_BLURB[cfg.preset] || PRESET_BLURB.custom}</p>
 
-            <div className="divide-y divide-line">
+            <div className="border-t border-line">
               <NumberSetting label="Sprints" value={cfg.sprintCount} min={1} max={10}
                 onChange={(v) => setConfig({ sprintCount: v })} />
-              <NumberSetting label="Sprint length" value={cfg.sprintSeconds} min={60} max={300} step={15} suffix="s"
-                onChange={(v) => setConfig({ sprintSeconds: v })} />
-              <NumberSetting label="New task every" value={cfg.taskEverySec} min={3} max={20} suffix="s"
-                onChange={(v) => setConfig({ taskEverySec: v })} />
-              <NumberSetting label="Task deadline" value={cfg.taskDeadlineSec} min={10} max={60} step={5} suffix="s"
-                onChange={(v) => setConfig({ taskDeadlineSec: v })} />
-              <NumberSetting label="Incident every" value={cfg.incidentEverySec} min={20} max={120} step={5} suffix="s"
-                onChange={(v) => setConfig({ incidentEverySec: v })} />
+            </div>
+
+            <div className="divide-y divide-line border-t border-line">
+              <ToggleSetting label="Hints" desc="incidents suggest which dials help"
+                checked={cfg.hints} onChange={(on) => setConfig({ hints: on })} />
+              <ToggleSetting label="Bot chatter" desc="ceo-dave & customer-support in chat"
+                checked={cfg.botChatter} onChange={(on) => setConfig({ botChatter: on })} />
             </div>
 
             <button
-              className="text-xs text-accent font-medium cursor-pointer"
+              className="text-xs text-accent font-medium cursor-pointer pt-3"
               onClick={() => setShowAdvanced(!showAdvanced)}
             >
               {showAdvanced ? '− Hide' : '+ Show'} advanced
             </button>
 
             {showAdvanced && (
-              <div className="space-y-4 animate-pop">
+              <div className="space-y-4 animate-pop pt-2">
                 <div className="divide-y divide-line">
+                  <NumberSetting label="Sprint length" value={cfg.sprintSeconds} min={60} max={300} step={15} suffix="s"
+                    onChange={(v) => setConfig({ sprintSeconds: v })} />
+                  <NumberSetting label="New task every" value={cfg.taskEverySec} min={3} max={20} suffix="s"
+                    onChange={(v) => setConfig({ taskEverySec: v })} />
+                  <NumberSetting label="Task deadline" value={cfg.taskDeadlineSec} min={10} max={60} step={5} suffix="s"
+                    onChange={(v) => setConfig({ taskDeadlineSec: v })} />
+                  <NumberSetting label="Incident every" value={cfg.incidentEverySec} min={20} max={120} step={5} suffix="s"
+                    onChange={(v) => setConfig({ incidentEverySec: v })} />
+                  <NumberSetting label="Incident deadline" value={cfg.incidentDeadlineSec} min={20} max={180} step={10} suffix="s"
+                    onChange={(v) => setConfig({ incidentDeadlineSec: v })} />
+                  <NumberSetting label="Traffic spike ×" value={cfg.spikeMult} min={2} max={8}
+                    onChange={(v) => setConfig({ spikeMult: v })} />
                   <NumberSetting label="Controls per player" value={cfg.controlsPerPlayer} min={2} max={8}
                     onChange={(v) => setConfig({ controlsPerPlayer: v })} />
                   <NumberSetting label="Max tasks per player" value={cfg.maxActivePerPlayer} min={1} max={4}
@@ -183,15 +214,18 @@ export default function Lobby() {
                     onChange={(v) => setConfig({ incidentDrainPerSec: v })} />
                   <NumberSetting label="Difficulty ramp" value={cfg.difficultyRamp} min={0} max={1} step={0.05}
                     onChange={(v) => setConfig({ difficultyRamp: v })} />
-                  <NumberSetting label="Incident deadline" value={cfg.incidentDeadlineSec} min={20} max={180} step={10} suffix="s"
-                    onChange={(v) => setConfig({ incidentDeadlineSec: v })} />
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-1">
                   <SectionLabel>Incident types</SectionLabel>
                   {Object.keys(INCIDENTS).map((k) => (
                     <label key={k} className="flex items-center justify-between py-1">
-                      <span className="text-sm text-subtle">{INCIDENT_LABELS[k]}</span>
+                      <span className="text-sm text-subtle">
+                        {INCIDENT_LABELS[k]}
+                        {INCIDENTS[k].requires && (
+                          <span className="text-xs text-faint"> (needs {SERVICES[INCIDENTS[k].requires].label})</span>
+                        )}
+                      </span>
                       <Switch
                         checked={!!cfg.incidents[k]}
                         onChange={(on) => setConfig({ incidents: { [k]: on } })}
@@ -199,11 +233,6 @@ export default function Lobby() {
                     </label>
                   ))}
                 </div>
-
-                <label className="flex items-center justify-between py-1">
-                  <span className="text-sm text-subtle">Bot chatter (CEO, support…)</span>
-                  <Switch checked={cfg.botChatter} onChange={(on) => setConfig({ botChatter: on })} />
-                </label>
               </div>
             )}
           </div>

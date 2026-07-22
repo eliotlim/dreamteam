@@ -1,36 +1,58 @@
 import { DurableObject } from 'cloudflare:workers';
 import {
   ROLES, CRITICAL_CONTROLS, CONTROL_POOL, FEATURES, BUGS, INCIDENTS,
-  INFRA_NODES, AMBIENT_LOGS, TRACE_ROUTES, BOTS, CEO_SPRINT_LINES,
-  CEO_INCIDENT_LINES, instructionFor, NAME_ADJECTIVES, NAME_NOUNS,
+  SERVICES, CORE_SERVICES, EPIC_FEATURES, REGIONS, AMBIENT_LOGS, SERVICE_LOGS,
+  TRACE_ROUTES, BOTS, CEO_SPRINT_LINES, CEO_INCIDENT_LINES, instructionFor,
+  NAME_ADJECTIVES, NAME_NOUNS,
 } from '../shared/content.js';
 
 const TICK_MS = 1000;
 const REVIEW_SECONDS = 15;
+const PER_REPLICA_RPS = 35;
+
+// Deterministic starting values for the ops console — the sim needs a sane
+// initial state (3 pods, warm-ish cache, moderate drain, nothing to zero).
+const CRITICAL_INIT = {
+  autoscaler: 0, circuit_breaker: 0, queue_drain: 4, replicas: 3, cache_ttl: 3,
+};
 
 export const DEFAULT_CONFIG = {
   preset: 'standard',
-  sprintSeconds: 150,     // length of one sprint
-  sprintCount: 3,         // sprints per game
-  controlsPerPlayer: 4,   // panel size (criticals may overflow this)
-  taskEverySec: 8,        // average seconds between new tasks (sprint 1)
-  taskDeadlineSec: 30,    // seconds to finish a task (sprint 1)
-  incidentEverySec: 45,   // average seconds between incidents
-  incidentDeadlineSec: 60,// seconds before an incident auto-mitigates (with pain)
-  maxActivePerPlayer: 2,  // max simultaneous instructions shown per player
-  bugChance: 0.3,         // fraction of tasks that are bugs
-  missPenalty: 8,         // health lost when a task expires
-  incidentDrainPerSec: 0.5, // health lost per second while an incident burns
-  healOnComplete: 2,      // health gained per completed task
-  difficultyRamp: 0.25,   // +pace per sprint
+  hints: true,            // incident cards suggest which dials help
   botChatter: true,       // flavor bots in chat
+  sprintCount: 3,
+  // --- advanced ---
+  sprintSeconds: 150,
+  controlsPerPlayer: 4,
+  taskEverySec: 8,
+  taskDeadlineSec: 30,
+  incidentEverySec: 45,
+  incidentDeadlineSec: 60,
+  maxActivePerPlayer: 2,
+  bugChance: 0.3,
+  missPenalty: 8,
+  incidentDrainPerSec: 0.5,
+  healOnComplete: 2,
+  difficultyRamp: 0.25,
+  spikeMult: 4,
   incidents: { outage: true, spike: true, integration: true, queue: true, failover: true },
 };
 
+// Presets tune pacing AND how much infrastructure you start with.
 export const PRESETS = {
-  chill:    { taskEverySec: 12, taskDeadlineSec: 45, incidentEverySec: 75, incidentDeadlineSec: 90, missPenalty: 5, incidentDrainPerSec: 0.25, sprintSeconds: 120, difficultyRamp: 0.15 },
-  standard: {},
-  chaos:    { taskEverySec: 5, taskDeadlineSec: 22, incidentEverySec: 30, incidentDeadlineSec: 45, missPenalty: 10, incidentDrainPerSec: 0.8, sprintSeconds: 180, difficultyRamp: 0.35 },
+  chill: {
+    taskEverySec: 12, taskDeadlineSec: 45, incidentEverySec: 75,
+    incidentDeadlineSec: 90, missPenalty: 5, incidentDrainPerSec: 0.25,
+    sprintSeconds: 120, difficultyRamp: 0.15, spikeMult: 3,
+    startingServices: [],
+  },
+  standard: { startingServices: ['cache', 'queue'] },
+  chaos: {
+    taskEverySec: 5, taskDeadlineSec: 22, incidentEverySec: 30,
+    incidentDeadlineSec: 45, missPenalty: 10, incidentDrainPerSec: 0.8,
+    sprintSeconds: 180, difficultyRamp: 0.35, spikeMult: 5,
+    startingServices: ['cache', 'queue', 'payments'],
+  },
 };
 
 const rnd = (n) => Math.floor(Math.random() * n);
@@ -39,39 +61,44 @@ const shuffle = (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const uid = () => crypto.randomUUID().slice(0, 8);
 
-function freshInfra() {
-  const infra = {};
-  for (const n of INFRA_NODES) infra[n.id] = 'ok';
-  return infra;
+function freshSim() {
+  return {
+    rps: 90, util: 0.7, err: 0.5, p95: 160, queueDepth: 12, dbIops: 150,
+    crashedPods: 0, trafficMult: 1, paymentsUp: true, failedRegion: null,
+    stableTicks: 0,
+  };
 }
 
 function freshState(code) {
   return {
     code,
     createdAt: Date.now(),
-    phase: 'lobby', // lobby | playing | review | ended
+    phase: 'lobby',
     config: structuredClone(DEFAULT_CONFIG),
-    players: {},    // pid -> {id,name,role,isHost,connected,joinedAt,controls:[]}
+    players: {},
+    services: [...CORE_SERVICES, ...PRESETS.standard.startingServices],
     sprint: 0,
     sprintEndsAt: 0,
     reviewEndsAt: 0,
     score: 0,
     health: 100,
     victory: false,
-    tasks: [],      // active tasks
-    doneLog: [],    // recently finished/failed tasks (kanban Done/Failed)
+    tasks: [],
+    doneLog: [],
     incident: null,
     backlog: [],
     chat: [],
     logs: [],
     traces: [],
     metrics: [],
-    infra: freshInfra(),
+    nodes: {},
+    sim: freshSim(),
     stats: { shipped: 0, bugsFixed: 0, incidentsResolved: 0, missed: 0, sprints: [] },
     sprintStats: null,
     nextTaskAt: 0,
     nextIncidentAt: 0,
     nextTraceAt: 0,
+    tickCount: 0,
   };
 }
 
@@ -144,7 +171,6 @@ export class GameRoom extends DurableObject {
         connected: true, joinedAt: Date.now(), controls: [],
       };
       g.players[pid] = p;
-      // joining mid-game: deal a panel from the generic pool
       if (g.phase === 'playing' && role !== 'spectator') this.dealPoolControls(p);
       this.botSay('system', `${name} joined the team 👋`);
     } else {
@@ -173,32 +199,18 @@ export class GameRoom extends DurableObject {
         .sort((a, b) => a.joinedAt - b.joinedAt)[0];
       if (next) next.isHost = true;
     }
-    if (this.g.phase === 'playing') this.handleDeparture(p);
+    if (this.g.phase === 'playing') {
+      const orphaned = this.g.tasks.filter((t) => t.ownerPid === p.id || t.displayPid === p.id);
+      for (const t of orphaned) this.finishTask(t, 'cancelled');
+      if (orphaned.length) {
+        this.botSay('system', `${p.name} stepped away — ${orphaned.length} task(s) reassigned to the void.`);
+      }
+    }
     this.persist();
     this.broadcast({ t: 'players', players: this.publicPlayers() });
   }
 
   webSocketError(ws) { this.webSocketClose(ws); }
-
-  handleDeparture(p) {
-    const g = this.g;
-    // cancel tasks that need this player, no penalty
-    const orphaned = g.tasks.filter((t) => t.ownerPid === p.id || t.displayPid === p.id);
-    if (orphaned.length) {
-      for (const t of orphaned) this.finishTask(t, 'cancelled');
-      this.botSay('system', `${p.name} stepped away — ${orphaned.length} task(s) reassigned to the void.`);
-    }
-    // auto-complete incident needs stuck on their panel
-    if (g.incident) {
-      for (const need of g.incident.needs) {
-        if (need.pid === p.id && !need.done) {
-          need.done = true;
-          this.botSay('pager', `auto-remediation kicked in for "${need.label}" (owner offline)`);
-        }
-      }
-      this.checkIncidentResolved();
-    }
-  }
 
   // ------------------------------------------------------------- messages
 
@@ -263,7 +275,11 @@ export class GameRoom extends DurableObject {
     const c = this.g.config;
     const num = (k, lo, hi) => { if (typeof patch[k] === 'number' && !Number.isNaN(patch[k])) c[k] = clamp(patch[k], lo, hi); };
     if (typeof patch.preset === 'string' && PRESETS[patch.preset]) {
-      Object.assign(c, structuredClone(DEFAULT_CONFIG), PRESETS[patch.preset], { preset: patch.preset, incidents: c.incidents });
+      const { startingServices, ...knobs } = PRESETS[patch.preset];
+      Object.assign(c, structuredClone(DEFAULT_CONFIG), knobs, {
+        preset: patch.preset, incidents: c.incidents, hints: c.hints, botChatter: c.botChatter,
+      });
+      this.g.services = [...CORE_SERVICES, ...startingServices];
     }
     num('sprintSeconds', 45, 600);
     num('sprintCount', 1, 10);
@@ -278,6 +294,8 @@ export class GameRoom extends DurableObject {
     num('incidentDrainPerSec', 0, 3);
     num('healOnComplete', 0, 10);
     num('difficultyRamp', 0, 1);
+    num('spikeMult', 2, 8);
+    if (typeof patch.hints === 'boolean') c.hints = patch.hints;
     if (typeof patch.botChatter === 'boolean') c.botChatter = patch.botChatter;
     if (patch.incidents && typeof patch.incidents === 'object') {
       for (const k of Object.keys(INCIDENTS)) {
@@ -285,6 +303,27 @@ export class GameRoom extends DurableObject {
       }
     }
     if (typeof patch.preset !== 'string') c.preset = 'custom';
+  }
+
+  // ------------------------------------------------------------- controls helpers
+
+  findControl(key) {
+    for (const p of Object.values(this.g.players)) {
+      const c = p.controls.find((c) => c.key === key);
+      if (c) return { p, c };
+    }
+    return null;
+  }
+
+  ctlVal(key, fallback = 0) {
+    return this.findControl(key)?.c.value ?? fallback;
+  }
+
+  setCtl(key, value) {
+    const found = this.findControl(key);
+    if (!found) return;
+    found.c.value = value;
+    this.broadcast({ t: 'control', pid: found.p.id, key, value });
   }
 
   // ------------------------------------------------------------- game flow
@@ -305,24 +344,34 @@ export class GameRoom extends DurableObject {
     g.logs = [];
     g.traces = [];
     g.metrics = [];
-    g.infra = freshInfra();
+    g.sim = freshSim();
     g.stats = { shipped: 0, bugsFixed: 0, incidentsResolved: 0, missed: 0, sprints: [] };
-    g.backlog = shuffle(FEATURES);
+    this.buildBacklog();
     this.dealAllControls();
     this.startSprint(1);
+  }
+
+  buildBacklog() {
+    const g = this.g;
+    const epics = shuffle(EPIC_FEATURES.filter((e) => !g.services.includes(e.service)));
+    const base = shuffle(FEATURES);
+    // interleave: an epic every ~3 features so the infra grows steadily
+    const out = [];
+    while (base.length || epics.length) {
+      out.push(...base.splice(0, 2).map((title) => ({ title })));
+      if (epics.length) out.push(epics.shift());
+    }
+    g.backlog = out;
   }
 
   dealAllControls() {
     const players = this.activePlayers();
     for (const p of players) p.controls = [];
-    // criticals first, preferring matching roles, then round-robin by panel size
     const byLoad = () => [...players].sort((a, b) => a.controls.length - b.controls.length);
     for (const def of shuffle(CRITICAL_CONTROLS)) {
       const match = byLoad().find((p) => p.role === def.role);
-      const target = match || byLoad()[0];
-      target.controls.push(this.instantiate(def));
+      (match || byLoad()[0]).controls.push(this.instantiate(def, true));
     }
-    // fill panels from the pool
     const pool = shuffle(CONTROL_POOL);
     for (const p of players) {
       const preferred = pool.filter((d) => d.role === p.role);
@@ -331,7 +380,7 @@ export class GameRoom extends DurableObject {
         if (p.controls.length >= this.g.config.controlsPerPlayer) break;
         if (p.controls.some((c) => c.key === def.key)) continue;
         if (players.some((o) => o !== p && o.controls.some((c) => c.key === def.key))) continue;
-        p.controls.push(this.instantiate(def));
+        p.controls.push(this.instantiate(def, false));
       }
     }
   }
@@ -345,14 +394,20 @@ export class GameRoom extends DurableObject {
     const rest = pool.filter((d) => d.role !== p.role);
     p.controls = [...preferred, ...rest]
       .slice(0, this.g.config.controlsPerPlayer)
-      .map((d) => this.instantiate(d));
+      .map((d) => this.instantiate(d, false));
   }
 
-  instantiate(def) {
-    const c = { key: def.key, label: def.label, type: def.type, value: 0 };
-    if (def.type === 'slider') { c.max = def.max; c.value = rnd(def.max + 1); }
+  instantiate(def, crit) {
+    const c = { key: def.key, label: def.label, type: def.type, value: 0, crit };
+    if (def.type === 'slider') {
+      c.min = def.min ?? 0;
+      c.max = def.max;
+      c.value = c.min + rnd(c.max - c.min + 1);
+    }
     if (def.type === 'select') { c.options = def.options; c.value = rnd(def.options.length); }
     if (def.type === 'toggle') c.value = rnd(2);
+    if (def.key in CRITICAL_INIT) c.value = CRITICAL_INIT[def.key];
+    if (def.key === 'dns_primary') c.value = rnd(REGIONS.length);
     return c;
   }
 
@@ -367,7 +422,10 @@ export class GameRoom extends DurableObject {
     g.sprintStats = { shipped: 0, bugsFixed: 0, incidentsResolved: 0, missed: 0, scoreStart: g.score };
     g.tasks = [];
     g.incident = null;
-    g.infra = freshInfra();
+    g.sim.trafficMult = 1;
+    g.sim.crashedPods = 0;
+    g.sim.paymentsUp = true;
+    g.sim.failedRegion = null;
     if (n > 1) g.health = clamp(g.health + 10, 0, 100);
     g.nextTaskAt = now + 3000;
     g.nextIncidentAt = now + (g.config.incidentEverySec * 1000) / this.ramp();
@@ -403,11 +461,9 @@ export class GameRoom extends DurableObject {
   endGame() {
     const g = this.g;
     g.phase = 'ended';
-    if (g.victory) {
-      this.botSay('ceo', 'We shipped the roadmap AND the site is up?! Promotions for everyone. (Figuratively.)');
-    } else {
-      this.botSay('ceo', 'The site is down and morale is downer. Mandatory fun retreat next week.');
-    }
+    this.botSay('ceo', g.victory
+      ? 'We shipped the roadmap AND the site is up?! Promotions for everyone. (Figuratively.)'
+      : 'The site is down and morale is downer. Mandatory fun retreat next week.');
     this.persist();
     this.broadcastPhase();
     this.ctx.storage.deleteAlarm();
@@ -420,11 +476,136 @@ export class GameRoom extends DurableObject {
     g.tasks = [];
     g.doneLog = [];
     g.incident = null;
-    g.infra = freshInfra();
+    g.sim = freshSim();
     for (const p of Object.values(g.players)) p.controls = [];
+    const { startingServices = [] } = PRESETS[g.config.preset] || {};
+    g.services = [...CORE_SERVICES, ...startingServices];
     this.persist();
     this.ctx.storage.deleteAlarm();
-    this.broadcast({ t: 'snapshot', g: this.publicState() });
+    this.broadcast({ t: 'snapshot', g: this.publicState(), now: Date.now() });
+  }
+
+  // ------------------------------------------------------------- simulation
+
+  simTick(now) {
+    const g = this.g;
+    const sim = g.sim;
+    const cfg = g.config;
+    const has = (svc) => g.services.includes(svc);
+
+    // --- demand ---
+    const growth = 1 + 0.2 * (g.sprint - 1);
+    let demand = (85 + 30 * Math.sin(now / 20000) + (Math.random() - 0.5) * 16) * growth;
+    if (g.incident?.kind === 'spike') {
+      const ramp = Math.min(1, (now - g.incident.startedAt) / 6000);
+      sim.trafficMult = 1 + (cfg.spikeMult - 1) * ramp;
+    } else {
+      sim.trafficMult = Math.max(1, sim.trafficMult - 0.3); // spikes subside
+    }
+    demand *= sim.trafficMult;
+    sim.rps = Math.max(5, Math.round(demand));
+
+    // --- capacity ---
+    const replicas = this.ctlVal('replicas', 3);
+    const cacheTtl = this.ctlVal('cache_ttl', 3);
+    const effReplicas = Math.max(1, replicas - sim.crashedPods);
+    const cacheFactor = has('cache') ? 1 + 0.06 * cacheTtl : 1;
+    const cdnFactor = has('cdn') ? 1.1 : 1;
+    const capacity = effReplicas * PER_REPLICA_RPS * cacheFactor * cdnFactor;
+    sim.util = sim.rps / capacity;
+
+    // --- autoscaler nudges the real replicas dial (owner sees it move) ---
+    if (this.ctlVal('autoscaler') === 1 && g.tickCount % 3 === 0) {
+      if (sim.util > 0.85 && replicas < 8) this.setCtl('replicas', replicas + 1);
+      else if (sim.util < 0.35 && replicas > 1) this.setCtl('replicas', replicas - 1);
+    }
+
+    // --- latency & errors follow utilization ---
+    let p95 = 130 + 60 * sim.util + (Math.random() - 0.5) * 30;
+    if (sim.util > 0.8) p95 += (sim.util - 0.8) * 1200;
+    let err = 0.3 + Math.random() * 0.5;
+    if (sim.util > 1) err += (sim.util - 1) * 45;          // load shedding
+    if (sim.crashedPods > 0) err += 6;                     // crash-looping pods
+    const breakerOn = this.ctlVal('circuit_breaker') === 1;
+    if (has('payments') && !sim.paymentsUp) {
+      err += breakerOn ? 2 : 14;                           // fail fast vs timeouts
+      p95 += breakerOn ? 20 : 350;
+    }
+    const dnsRegion = REGIONS[this.ctlVal('dns_primary', 0)];
+    if (sim.failedRegion && dnsRegion === sim.failedRegion) {
+      err += 28; p95 += 500;                               // pointing at a dead region
+    }
+
+    // --- queue dynamics ---
+    if (has('queue')) {
+      let inflow = sim.rps * 0.12;
+      if (has('payments') && !sim.paymentsUp && !breakerOn) inflow += sim.rps * 0.4; // retry storm
+      if (g.incident?.kind === 'queue' && now - g.incident.startedAt < 15000) inflow += 30;
+      const outflow = 4 + 7 * this.ctlVal('queue_drain', 4);
+      sim.queueDepth = clamp(sim.queueDepth + Math.round(inflow - outflow), 0, 999);
+      if (sim.queueDepth > 250) err += 4;                  // jobs timing out
+    } else {
+      sim.queueDepth = 0;
+    }
+
+    // --- db ---
+    const cacheHitRatio = has('cache') ? 0.35 + 0.06 * cacheTtl : 0;
+    sim.dbIops = Math.round(sim.rps * 2.2 * (1 - cacheHitRatio) * (sim.failedRegion && dnsRegion !== sim.failedRegion ? 1.4 : 1));
+
+    sim.err = Math.round(clamp(err, 0, 100) * 10) / 10;
+    sim.p95 = Math.round(clamp(p95, 40, 3000));
+    sim.cacheHit = Math.round(cacheHitRatio * 100);
+
+    // sustained customer pain drains morale even outside incidents
+    if (sim.err > 12) g.health -= 0.2;
+  }
+
+  nodeStats() {
+    const g = this.g;
+    const sim = g.sim;
+    const has = (svc) => g.services.includes(svc);
+    const dnsRegion = REGIONS[this.ctlVal('dns_primary', 0)];
+    const replicas = this.ctlVal('replicas', 3);
+    const breakerOn = this.ctlVal('circuit_breaker') === 1;
+    const nodes = {};
+
+    nodes.dns = {
+      v: dnsRegion,
+      s: sim.failedRegion && dnsRegion === sim.failedRegion ? 'down' : 'ok',
+    };
+    nodes.lb = {
+      v: `${sim.rps} rps`,
+      s: sim.util > 1.2 ? 'degraded' : 'ok',
+    };
+    nodes.frontend = {
+      v: `${sim.p95} ms p95`,
+      s: sim.util > 1.15 || sim.crashedPods > 0 ? 'degraded' : 'ok',
+    };
+    nodes.backend = {
+      v: `${Math.round(sim.util * 100)}% load · ${replicas - sim.crashedPods}/${replicas} pods`,
+      s: sim.crashedPods > 0 || sim.util > 1.15 ? 'down' : sim.util > 0.85 ? 'degraded' : 'ok',
+    };
+    nodes.db = {
+      v: `${sim.dbIops} iops`,
+      s: (sim.failedRegion && dnsRegion === sim.failedRegion) || sim.dbIops > 700 ? 'degraded' : 'ok',
+    };
+    if (has('cdn')) nodes.cdn = { v: `${70 + rnd(25)}% hit`, s: 'ok' };
+    if (has('cache')) nodes.cache = { v: `${sim.cacheHit}% hit`, s: 'ok' };
+    if (has('queue')) {
+      nodes.queue = {
+        v: `${sim.queueDepth} jobs`,
+        s: sim.queueDepth > 250 ? 'down' : sim.queueDepth > 100 ? 'degraded' : 'ok',
+      };
+    }
+    if (has('payments')) {
+      nodes.payments = {
+        v: sim.paymentsUp ? `${40 + rnd(60)} ms` : breakerOn ? 'breaker open' : 'timeouts',
+        s: sim.paymentsUp ? 'ok' : breakerOn ? 'degraded' : 'down',
+      };
+    }
+    if (has('search')) nodes.search = { v: `${Math.round(sim.rps * 0.3)} qps`, s: 'ok' };
+    if (has('analytics')) nodes.analytics = { v: `${Math.round(sim.rps * 4)} ev/s`, s: 'ok' };
+    return nodes;
   }
 
   // ------------------------------------------------------------- tick
@@ -440,7 +621,10 @@ export class GameRoom extends DurableObject {
     if (g.phase !== 'playing') return;
 
     const now = Date.now();
-    const events = { logs: [] };
+    g.tickCount++;
+    const logs = [];
+
+    this.simTick(now);
 
     // task deadlines
     for (const t of [...g.tasks]) {
@@ -456,17 +640,9 @@ export class GameRoom extends DurableObject {
 
     // incident lifecycle
     if (g.incident) {
-      g.health -= g.config.incidentDrainPerSec;
-      if (now >= g.incident.deadlineAt) {
-        g.health -= 15;
-        this.botSay('pager', `🔥 "${g.incident.title}" auto-mitigated after timeout. That one leaves a mark.`);
-        this.clearIncident(false);
-      } else {
-        const def = INCIDENTS[g.incident.kind];
-        if (Math.random() < 0.6) events.logs.push(this.makeLog(pick(def.logs)));
-      }
+      this.updateIncident(now, logs);
     } else if (now >= g.nextIncidentAt) {
-      this.spawnIncident();
+      this.spawnIncident(now);
     }
 
     // task spawning
@@ -476,12 +652,19 @@ export class GameRoom extends DurableObject {
       g.nextTaskAt = now + gap * (0.7 + Math.random() * 0.6);
     }
 
-    // ambient telemetry
-    if (Math.random() < 0.7) events.logs.push(this.makeLog(pick(AMBIENT_LOGS)));
-    const point = this.metricsPoint(now);
+    // telemetry
+    if (Math.random() < 0.6) logs.push(this.makeLog(pick(AMBIENT_LOGS)));
+    const extraPools = g.services.filter((s) => SERVICE_LOGS[s]);
+    if (extraPools.length && Math.random() < 0.35) {
+      logs.push(this.makeLog(pick(SERVICE_LOGS[pick(extraPools)])));
+    }
+    if (g.sim.util > 1 && Math.random() < 0.7) {
+      logs.push(this.makeLog(['error', 'backend', '503 shedding load at {n}% utilization']));
+    }
+    const point = { t: now, rps: g.sim.rps, err: g.sim.err, p95: g.sim.p95, queue: g.sim.queueDepth };
     g.metrics.push(point);
     if (g.metrics.length > 90) g.metrics.shift();
-    for (const l of events.logs) { g.logs.push(l); if (g.logs.length > 120) g.logs.shift(); }
+    for (const l of logs) { g.logs.push(l); if (g.logs.length > 120) g.logs.shift(); }
     let trace = null;
     if (now >= g.nextTraceAt) {
       trace = this.makeTrace(now);
@@ -489,9 +672,9 @@ export class GameRoom extends DurableObject {
       if (g.traces.length > 20) g.traces.shift();
       g.nextTraceAt = now + 3000 + rnd(3000);
     }
+    g.nodes = this.nodeStats();
 
     g.health = clamp(g.health, 0, 100);
-
     if (g.health <= 0) {
       g.victory = false;
       this.persist();
@@ -503,11 +686,11 @@ export class GameRoom extends DurableObject {
       t: 'tick',
       now, score: g.score, health: g.health,
       sprint: g.sprint, sprintEndsAt: g.sprintEndsAt,
-      m: point, logs: events.logs, trace,
+      m: point, logs, trace, nodes: g.nodes,
+      incident: g.incident,
     });
 
     if (now >= g.sprintEndsAt) { this.persist(); this.endSprint(); return; }
-
     this.persist();
     this.ctx.storage.setAlarm(now + TICK_MS);
   }
@@ -517,7 +700,6 @@ export class GameRoom extends DurableObject {
   targetedControls() {
     const set = new Set();
     for (const t of this.g.tasks) set.add(t.controlKey);
-    if (this.g.incident) for (const n of this.g.incident.needs) set.add(n.key);
     return set;
   }
 
@@ -530,26 +712,30 @@ export class GameRoom extends DurableObject {
     );
     if (!displays.length) return;
 
+    // tasks only target mission dials (pool controls) — the ops console is
+    // reserved for running the actual system
     const targeted = this.targetedControls();
-    const owners = shuffle(players).filter((p) => p.controls.some((c) => !targeted.has(c.key)));
+    const eligible = (p) => p.controls.filter((c) => !c.crit && !targeted.has(c.key));
+    const owners = shuffle(players).filter((p) => eligible(p).length > 0);
     if (!owners.length) return;
     const owner = owners[0];
-    const control = pick(owner.controls.filter((c) => !targeted.has(c.key)));
+    const control = pick(eligible(owner));
 
     let target = 1;
     if (control.type === 'toggle') target = control.value ? 0 : 1;
-    if (control.type === 'slider') { do { target = rnd(control.max + 1); } while (target === control.value); }
+    if (control.type === 'slider') { do { target = control.min + rnd(control.max - control.min + 1); } while (target === control.value); }
     if (control.type === 'select') { do { target = rnd(control.options.length); } while (target === control.value); }
 
     const isBug = Math.random() < g.config.bugChance;
-    if (!g.backlog.length) g.backlog = shuffle(FEATURES);
-    const title = isBug ? pick(BUGS) : g.backlog.shift();
+    if (!g.backlog.length) g.backlog = shuffle(FEATURES).map((title) => ({ title }));
+    const item = isBug ? { title: pick(BUGS) } : g.backlog.shift();
     const deadline = (g.config.taskDeadlineSec * 1000) / (1 + 0.15 * (g.sprint - 1));
 
     const task = {
       id: uid(),
       kind: isBug ? 'bug' : 'feature',
-      title,
+      title: item.title,
+      epicService: !isBug && item.service && !g.services.includes(item.service) ? item.service : null,
       instr: instructionFor(control, target),
       displayPid: pick(displays).id,
       ownerPid: owner.id,
@@ -564,7 +750,7 @@ export class GameRoom extends DurableObject {
     g.tasks.push(task);
     this.broadcast({ t: 'task', task });
     if (isBug && g.config.botChatter && Math.random() < 0.5) {
-      this.botSay('support', `New ticket: "${title}" — 3 customers affected 📩`);
+      this.botSay('support', `New ticket: "${item.title}" — 3 customers affected 📩`);
     }
   }
 
@@ -580,87 +766,126 @@ export class GameRoom extends DurableObject {
   completeTask(task) {
     const g = this.g;
     const fast = Date.now() - task.createdAt < (task.deadlineAt - task.createdAt) / 2;
-    const points = task.points + (fast ? 25 : 0);
-    g.score += points;
+    g.score += task.points + (fast ? 25 : 0);
     g.health = clamp(g.health + g.config.healOnComplete, 0, 100);
     if (task.kind === 'bug') { g.stats.bugsFixed++; g.sprintStats.bugsFixed++; }
     else { g.stats.shipped++; g.sprintStats.shipped++; }
     this.finishTask(task, 'done');
-    if (task.kind === 'feature' && g.config.botChatter && Math.random() < 0.35) {
+    if (task.epicService) this.unlockService(task.epicService, task.title);
+    else if (task.kind === 'feature' && g.config.botChatter && Math.random() < 0.35) {
       this.botSay('system', `Shipped: "${task.title}" ${fast ? '⚡ speed bonus!' : '🎉'}`);
     }
   }
 
+  unlockService(svc, featureTitle) {
+    const g = this.g;
+    if (g.services.includes(svc)) return;
+    g.services.push(svc);
+    g.nodes = this.nodeStats();
+    this.botSay('system', `Customers loved "${featureTitle}" — new service deployed: ${SERVICES[svc].icon} ${SERVICES[svc].label}. More infra, more ways to break! 📈`);
+    this.broadcast({ t: 'services', services: g.services, nodes: g.nodes });
+  }
+
   // ------------------------------------------------------------- incidents
 
-  spawnIncident() {
+  spawnIncident(now) {
     const g = this.g;
-    const enabled = Object.keys(INCIDENTS).filter((k) => g.config.incidents[k]);
-    if (!enabled.length) { g.nextIncidentAt = Infinity; return; }
+    const enabled = Object.keys(INCIDENTS).filter((k) => {
+      if (!g.config.incidents[k]) return false;
+      const req = INCIDENTS[k].requires;
+      return !req || g.services.includes(req);
+    });
+    if (!enabled.length) { g.nextIncidentAt = now + 30000; return; }
 
-    for (const kind of shuffle(enabled)) {
-      const def = INCIDENTS[kind];
-      const needs = [];
-      let feasible = true;
-      for (const need of def.needs) {
-        const owner = this.activePlayers().find((p) => p.controls.some((c) => c.key === need.key));
-        if (!owner) { feasible = false; break; }
-        const control = owner.controls.find((c) => c.key === need.key);
-        const pre = control.type !== 'button' && control.value === need.target;
-        needs.push({
-          pid: owner.id, ownerName: owner.name, key: need.key, target: need.target,
-          label: instructionFor(control, need.target), done: pre,
-        });
-      }
-      if (!feasible || needs.every((n) => n.done)) continue;
+    const kind = pick(enabled);
+    const def = INCIDENTS[kind];
+    const sim = g.sim;
 
-      g.incident = {
-        id: uid(), kind,
-        title: def.title, desc: def.desc,
-        needs,
-        startedAt: Date.now(),
-        deadlineAt: Date.now() + g.config.incidentDeadlineSec * 1000,
-        status: 'active',
-      };
-      for (const [node, status] of Object.entries(def.affects)) g.infra[node] = status;
-      this.botSay('pager', `🚨 INCIDENT: ${g.incident.title} — ${def.desc}`);
-      if (g.config.botChatter && Math.random() < 0.5) this.botSay('ceo', pick(CEO_INCIDENT_LINES));
-      this.broadcast({ t: 'incident', incident: g.incident });
-      this.broadcast({ t: 'infra', infra: g.infra });
-      return;
+    // seed the situation into the simulation
+    if (kind === 'outage') sim.crashedPods = Math.max(1, Math.floor(this.ctlVal('replicas', 3) * 0.6));
+    if (kind === 'integration') sim.paymentsUp = false;
+    if (kind === 'queue') sim.queueDepth = clamp(sim.queueDepth + 220, 0, 999);
+    if (kind === 'failover') sim.failedRegion = REGIONS[this.ctlVal('dns_primary', 0)];
+    sim.stableTicks = 0;
+
+    g.incident = {
+      id: uid(), kind,
+      title: def.title, desc: def.desc, goal: def.goal,
+      hint: g.config.hints ? def.hint : null,
+      startedAt: now,
+      deadlineAt: now + g.config.incidentDeadlineSec * 1000,
+      status: 'active',
+      goalDone: false,
+    };
+    this.botSay('pager', `🚨 INCIDENT: ${def.title} — ${def.desc}`);
+    if (g.config.botChatter && Math.random() < 0.5) this.botSay('ceo', pick(CEO_INCIDENT_LINES));
+    this.broadcast({ t: 'incident', incident: g.incident });
+  }
+
+  incidentGoalMet() {
+    const g = this.g;
+    const sim = g.sim;
+    switch (g.incident.kind) {
+      case 'outage': return sim.crashedPods === 0 && sim.util < 1;
+      case 'spike': return sim.util < 0.9;
+      case 'integration': return this.ctlVal('circuit_breaker') === 1;
+      case 'queue': return sim.queueDepth < 60;
+      case 'failover': return REGIONS[this.ctlVal('dns_primary', 0)] !== sim.failedRegion;
+      default: return false;
     }
-    // nothing spawnable right now; retry later
-    g.nextIncidentAt = Date.now() + 15000;
+  }
+
+  updateIncident(now, logs) {
+    const g = this.g;
+    const inc = g.incident;
+    g.health -= g.config.incidentDrainPerSec;
+
+    if (Math.random() < 0.6) logs.push(this.makeLog(pick(INCIDENTS[inc.kind].logs)));
+
+    // goal must hold for 2 consecutive ticks (no flapping past the finish line)
+    inc.goalDone = this.incidentGoalMet();
+    if (inc.goalDone) {
+      g.sim.stableTicks++;
+      if (g.sim.stableTicks >= 2) {
+        const fast = now - inc.startedAt < (g.config.incidentDeadlineSec * 1000) / 2;
+        g.score += 150 + (fast ? 50 : 0);
+        g.stats.incidentsResolved++; g.sprintStats.incidentsResolved++;
+        this.botSay('pager', `✅ Incident resolved: ${inc.title}${fast ? ' — blazing fast, +50 bonus' : ''}.`);
+        this.clearIncident(true);
+        return;
+      }
+    } else {
+      g.sim.stableTicks = 0;
+    }
+
+    if (now >= inc.deadlineAt) {
+      g.health -= 15;
+      this.botSay('pager', `🔥 "${inc.title}" burned for ${Math.round((now - inc.startedAt) / 1000)}s before outside help arrived. That one leaves a mark.`);
+      this.clearIncident(false);
+    }
   }
 
   clearIncident(resolved, silent = false) {
     const g = this.g;
     if (!g.incident) return;
-    g.incident.status = resolved ? 'resolved' : 'failed';
+    const inc = g.incident;
+    inc.status = resolved ? 'resolved' : 'failed';
     g.doneLog.push({
-      id: g.incident.id, kind: 'incident', title: g.incident.title,
+      id: inc.id, kind: 'incident', title: inc.title,
       status: resolved ? 'done' : 'failed', finishedAt: Date.now(),
     });
     if (g.doneLog.length > 12) g.doneLog.shift();
-    const last = g.incident;
     g.incident = null;
-    g.infra = freshInfra();
+    // the world heals: external causes end when the incident ends
+    g.sim.crashedPods = 0;
+    g.sim.paymentsUp = true;
+    g.sim.failedRegion = null;
+    g.sim.trafficMult = Math.min(g.sim.trafficMult, resolved ? g.sim.trafficMult : 1);
     g.nextIncidentAt = Date.now() + (g.config.incidentEverySec * 1000) / this.ramp();
-    if (!silent) this.broadcast({ t: 'incident', incident: last });
-    this.broadcast({ t: 'infra', infra: g.infra });
+    if (!silent) this.broadcast({ t: 'incident', incident: inc });
   }
 
-  checkIncidentResolved() {
-    const g = this.g;
-    if (!g.incident || !g.incident.needs.every((n) => n.done)) return;
-    const fast = Date.now() - g.incident.startedAt < (g.config.incidentDeadlineSec * 1000) / 2;
-    g.score += 150 + (fast ? 50 : 0);
-    g.stats.incidentsResolved++; g.sprintStats.incidentsResolved++;
-    this.botSay('pager', `✅ Incident resolved: ${g.incident.title}${fast ? ' — blazing fast, +50 bonus' : ''}. Uptime restored.`);
-    this.clearIncident(true);
-  }
-
-  // ------------------------------------------------------------- controls
+  // ------------------------------------------------------------- control input
 
   handleControl(p, key, value, press) {
     const g = this.g;
@@ -670,65 +895,29 @@ export class GameRoom extends DurableObject {
 
     if (control.type === 'button') {
       if (!press) return;
+      if (key === 'restart_backend' && g.sim.crashedPods > 0) {
+        g.sim.crashedPods = 0;
+        this.botSay('system', `${p.name} restarted the backend pods 🔄`);
+      }
     } else {
       if (typeof value !== 'number') return;
       if (control.type === 'toggle') value = value ? 1 : 0;
-      if (control.type === 'slider') value = clamp(Math.round(value), 0, control.max);
+      if (control.type === 'slider') value = clamp(Math.round(value), control.min ?? 0, control.max);
       if (control.type === 'select') value = clamp(Math.round(value), 0, control.options.length - 1);
       control.value = value;
       this.broadcast({ t: 'control', pid: p.id, key, value });
     }
 
     const effective = control.type === 'button' ? 1 : control.value;
-
-    // task completion (oldest matching first)
     const match = g.tasks
       .filter((t) => t.ownerPid === p.id && t.controlKey === key && t.target === effective)
       .sort((a, b) => a.createdAt - b.createdAt)[0];
     if (match) this.completeTask(match);
 
-    // incident needs
-    if (g.incident) {
-      let changed = false;
-      for (const need of g.incident.needs) {
-        if (need.pid !== p.id || need.key !== key) continue;
-        const ok = control.type === 'button' ? press : control.value === need.target;
-        if (ok && !need.done) { need.done = true; changed = true; }
-        if (!ok && need.done && control.type !== 'button') { need.done = false; changed = true; }
-      }
-      if (changed) {
-        this.broadcast({ t: 'incident', incident: g.incident });
-        this.checkIncidentResolved();
-      }
-    }
     this.persist();
   }
 
   // ------------------------------------------------------------- telemetry
-
-  metricsPoint(now) {
-    const g = this.g;
-    const wobble = Math.sin(now / 20000) * 15;
-    let rps = 120 + wobble + (Math.random() - 0.5) * 20;
-    let err = 0.5 + Math.random() * 0.8;
-    let p95 = 180 + (Math.random() - 0.5) * 40;
-    let queue = 5 + Math.random() * 4;
-    if (g.incident) {
-      const fx = INCIDENTS[g.incident.kind].metrics;
-      const elapsed = (now - g.incident.startedAt) / 1000;
-      if (fx.rps) rps += fx.rps;
-      if (fx.err) err += fx.err * (0.6 + Math.random() * 0.8);
-      if (fx.p95) p95 += fx.p95 * (0.7 + Math.random() * 0.6);
-      if (fx.queue) queue += fx.queue * elapsed * 0.35;
-    }
-    return {
-      t: now,
-      rps: Math.max(0, Math.round(rps)),
-      err: Math.round(Math.max(0, err) * 10) / 10,
-      p95: Math.max(20, Math.round(p95)),
-      queue: Math.max(0, Math.round(queue)),
-    };
-  }
 
   makeLog([level, svc, tmpl]) {
     return {
@@ -739,16 +928,21 @@ export class GameRoom extends DurableObject {
 
   makeTrace(now) {
     const g = this.g;
-    const route = pick(TRACE_ROUTES);
-    const affected = g.incident ? Object.keys(INCIDENTS[g.incident.kind].affects) : [];
+    const route = pick(TRACE_ROUTES.filter((r) => r.spans.every((s) => g.services.includes(s) || s === 'dns')));
+    if (!route) return null;
+    const slowSvcs = new Set();
+    if (g.sim.util > 0.9 || g.sim.crashedPods > 0) slowSvcs.add('backend');
+    if (!g.sim.paymentsUp) slowSvcs.add('payments');
+    if (g.sim.queueDepth > 150) slowSvcs.add('queue');
+    if (g.sim.failedRegion) slowSvcs.add('db');
     let total = 0;
     const spans = route.spans.map((svc) => {
-      let ms = 4 + rnd(60);
-      if (affected.includes(svc)) ms = Math.round(ms * (3 + Math.random() * 3));
+      let ms = 4 + rnd(50);
+      if (slowSvcs.has(svc)) ms = Math.round(ms * (3 + Math.random() * 4));
       total += ms;
       return { svc, ms };
     });
-    return { id: uid(), ts: now, name: route.name, total, spans, error: affected.length > 0 && Math.random() < 0.5 };
+    return { id: uid(), ts: now, name: route.name, total, spans, error: slowSvcs.size > 0 && Math.random() < 0.5 };
   }
 
   // ------------------------------------------------------------- chat/bots
@@ -768,7 +962,7 @@ export class GameRoom extends DurableObject {
     for (const [pid, p] of Object.entries(this.g.players)) {
       out[pid] = {
         id: p.id, name: p.name, role: p.role, isHost: p.isHost,
-        connected: p.connected, controls: p.controls,
+        connected: p.connected, controls: p.controls, joinedAt: p.joinedAt,
       };
     }
     return out;
@@ -779,12 +973,13 @@ export class GameRoom extends DurableObject {
     return {
       code: g.code, phase: g.phase, config: g.config,
       players: this.publicPlayers(),
+      services: g.services,
       sprint: g.sprint, sprintEndsAt: g.sprintEndsAt, reviewEndsAt: g.reviewEndsAt,
       score: g.score, health: g.health, victory: g.victory,
       tasks: g.tasks, doneLog: g.doneLog, incident: g.incident,
       backlog: g.backlog.slice(0, 6),
       chat: g.chat.slice(-50), logs: g.logs.slice(-60),
-      traces: g.traces, metrics: g.metrics, infra: g.infra,
+      traces: g.traces, metrics: g.metrics, nodes: g.nodes,
       stats: g.stats, sprintStats: g.sprintStats,
     };
   }
@@ -797,7 +992,7 @@ export class GameRoom extends DurableObject {
       score: g.score, health: g.health, victory: g.victory,
       stats: g.stats, sprintStats: g.sprintStats,
       players: this.publicPlayers(), backlog: g.backlog.slice(0, 6),
-      infra: g.infra,
+      services: g.services, nodes: g.nodes,
     });
   }
 

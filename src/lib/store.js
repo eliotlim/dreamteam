@@ -62,7 +62,8 @@ export function handleMessage(msg) {
         phase: msg.phase, sprint: msg.sprint, sprintEndsAt: msg.sprintEndsAt,
         reviewEndsAt: msg.reviewEndsAt, score: msg.score, health: msg.health,
         victory: msg.victory, stats: msg.stats, sprintStats: msg.sprintStats,
-        players: msg.players, backlog: msg.backlog, infra: msg.infra,
+        players: msg.players, backlog: msg.backlog,
+        services: msg.services ?? g.services, nodes: msg.nodes ?? g.nodes,
       });
       if (msg.phase === 'playing') { g.tasks = []; g.incident = null; }
       if (msg.now) state.clockOffset = msg.now - Date.now();
@@ -111,8 +112,10 @@ export function handleMessage(msg) {
       cap(g.chat, 100);
       break;
 
-    case 'infra':
-      if (g) g.infra = msg.infra;
+    case 'services':
+      if (!g) break;
+      g.services = msg.services;
+      if (msg.nodes) g.nodes = msg.nodes;
       break;
 
     case 'tick':
@@ -122,6 +125,8 @@ export function handleMessage(msg) {
         score: msg.score, health: msg.health,
         sprint: msg.sprint, sprintEndsAt: msg.sprintEndsAt,
       });
+      if (msg.nodes) g.nodes = msg.nodes;
+      if (msg.incident !== undefined) g.incident = msg.incident;
       g.metrics.push(msg.m);
       cap(g.metrics, 90);
       for (const l of msg.logs || []) g.logs.push(l);

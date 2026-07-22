@@ -1,83 +1,132 @@
-import { INFRA_NODES } from '../../shared/content.js';
-import { Card, Badge, Dot, cx } from '../components/ui.jsx';
+import { useMemo } from 'react';
+import { ReactFlow, Background, Handle, Position } from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import { SERVICES, SERVICE_EDGES } from '../../shared/content.js';
+import { Card, Badge, cx } from '../components/ui.jsx';
 import { useStore } from '../lib/store.js';
+import { IncidentCard } from './Missions.jsx';
+import { useNow } from '../lib/hooks.js';
 
-// fixed topology layout (viewBox 500 x 300)
-const POS = {
-  cdn: [60, 60], lb: [180, 60], frontend: [300, 60],
-  backend: [180, 150], cache: [60, 150], db: [300, 150],
-  queue: [180, 240], payments: [300, 240], region: [60, 240],
-};
-const EDGES = [
-  ['cdn', 'lb'], ['lb', 'frontend'], ['lb', 'backend'],
-  ['backend', 'cache'], ['backend', 'db'], ['backend', 'queue'],
-  ['backend', 'payments'], ['region', 'cdn'],
-];
-
-const STATUS = {
-  ok: { fill: 'var(--dt-ok)', label: 'operational' },
-  degraded: { fill: 'var(--dt-warn)', label: 'degraded' },
-  down: { fill: 'var(--dt-danger)', label: 'down' },
+const STATUS_STYLE = {
+  ok:       { dot: 'bg-ok',     border: 'border-line' },
+  degraded: { dot: 'bg-warn animate-pulse',   border: 'border-warn' },
+  down:     { dot: 'bg-danger animate-pulse', border: 'border-danger' },
 };
 
-function Node({ id, label, status }) {
-  const [x, y] = POS[id];
-  const st = STATUS[status] || STATUS.ok;
-  const bad = status !== 'ok';
+function ServiceNode({ data }) {
+  const st = STATUS_STYLE[data.status] || STATUS_STYLE.ok;
   return (
-    <g transform={`translate(${x - 52}, ${y - 19})`}>
-      <rect width="104" height="38" rx="10"
-        className={cx('fill-[var(--dt-surface)]', bad ? '' : '')}
-        stroke={bad ? st.fill : 'var(--dt-line)'} strokeWidth={bad ? 1.5 : 1} />
-      <circle cx="14" cy="19" r="4" fill={st.fill}>
-        {bad && <animate attributeName="opacity" values="1;0.25;1" dur="1.2s" repeatCount="indefinite" />}
-      </circle>
-      <text x="26" y="23" fontSize="11" fontWeight="600" fill="var(--dt-ink)">{label}</text>
-    </g>
+    <div className={cx(
+      'w-[148px] rounded-xl border bg-surface px-3 py-2 shadow-sm transition-colors',
+      st.border, data.status === 'down' && 'bg-danger-soft',
+    )}>
+      <Handle type="target" position={Position.Left} className="!bg-transparent !border-0 !size-1" />
+      <div className="flex items-center gap-1.5">
+        <span className={cx('size-2 rounded-full shrink-0', st.dot)} />
+        <span className="text-xs font-semibold text-ink truncate">{data.icon} {data.label}</span>
+      </div>
+      <div className="text-[11px] font-mono tabular-nums text-subtle mt-0.5 h-4 truncate">
+        {data.stat || '—'}
+      </div>
+      <Handle type="source" position={Position.Right} className="!bg-transparent !border-0 !size-1" />
+    </div>
   );
 }
 
-export default function Infra() {
+const nodeTypes = { service: ServiceNode };
+
+const TIER_X = [0, 210, 420, 640];
+
+export default function Infra({ full = false }) {
   const { g } = useStore();
-  const infra = g.infra || {};
-  const bad = INFRA_NODES.filter((n) => infra[n.id] && infra[n.id] !== 'ok');
+  const now = useNow(500);
+  const services = g.services || [];
+  const nodes = g.nodes || {};
+
+  const flowNodes = useMemo(() => {
+    const byTier = {};
+    return services.map((id) => {
+      const def = SERVICES[id];
+      const tierIdx = (byTier[def.tier] = (byTier[def.tier] ?? -1) + 1);
+      return {
+        id,
+        type: 'service',
+        position: { x: TIER_X[def.tier], y: tierIdx * 92 + (def.tier === 2 ? 46 : 0) },
+        data: {
+          label: def.label, icon: def.icon,
+          status: nodes[id]?.s || 'ok', stat: nodes[id]?.v,
+        },
+        draggable: false, connectable: false, selectable: false,
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [services, nodes]);
+
+  const flowEdges = useMemo(() =>
+    SERVICE_EDGES
+      .filter(([a, b]) => services.includes(a) && services.includes(b))
+      .map(([a, b]) => {
+        const bad = (nodes[a]?.s === 'down') || (nodes[b]?.s === 'down');
+        return {
+          id: `${a}-${b}`, source: a, target: b,
+          animated: !bad,
+          style: {
+            stroke: bad ? 'var(--dt-danger)' : 'var(--dt-line-strong)',
+            strokeWidth: bad ? 2 : 1.25,
+          },
+        };
+      }),
+    [services, nodes]);
+
+  const bad = services.filter((id) => nodes[id]?.s && nodes[id].s !== 'ok');
 
   return (
-    <div className="flex flex-col gap-3 min-h-0 overflow-y-auto">
-      <Card className="p-2">
-        <svg viewBox="0 0 380 290" className="w-full max-h-[340px]">
-          {EDGES.map(([a, b]) => (
-            <line key={`${a}${b}`}
-              x1={POS[a][0]} y1={POS[a][1]} x2={POS[b][0]} y2={POS[b][1]}
-              stroke="var(--dt-line-strong)" strokeWidth="1" strokeDasharray="3 3" />
-          ))}
-          {INFRA_NODES.map((n) => (
-            <Node key={n.id} id={n.id} label={n.label} status={infra[n.id] || 'ok'} />
-          ))}
-        </svg>
+    <div className="flex flex-col gap-3 h-full min-h-0">
+      <Card className={cx('overflow-hidden shrink-0', full ? 'flex-1 min-h-[260px]' : 'h-[300px] sm:h-[340px]')}>
+        <ReactFlow
+          key={services.join('|')}
+          nodes={flowNodes}
+          edges={flowEdges}
+          nodeTypes={nodeTypes}
+          fitView
+          fitViewOptions={{ padding: 0.15 }}
+          zoomOnScroll={false}
+          zoomOnDoubleClick={false}
+          panOnDrag={false}
+          preventScrolling={false}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable={false}
+          proOptions={{ hideAttribution: false }}
+        >
+          <Background gap={18} size={1} color="var(--dt-line)" />
+        </ReactFlow>
       </Card>
 
-      {bad.length === 0 ? (
-        <Card className="p-3 flex items-center gap-2 text-sm text-ok">
-          <Dot tone="ok" /> All systems operational
-        </Card>
-      ) : (
-        <Card className="p-3 space-y-2">
-          {bad.map((n) => (
-            <div key={n.id} className="flex items-center justify-between text-sm">
-              <span className="font-medium">{n.label}</span>
-              <Badge tone={infra[n.id] === 'down' ? 'danger' : 'warn'}>
-                {STATUS[infra[n.id]].label}
-              </Badge>
-            </div>
-          ))}
-          {g.incident && (
-            <div className="text-xs text-subtle border-t border-line pt-2">
-              🚨 <span className="font-semibold">{g.incident.title}</span> — resolve it from the mission panel checklist.
-            </div>
-          )}
-        </Card>
-      )}
+      <IncidentCard incident={g.incident} now={now} compact />
+
+      <Card className="p-3 shrink-0">
+        {bad.length === 0 ? (
+          <div className="flex items-center justify-between text-sm">
+            <span className="flex items-center gap-2 text-ok">
+              <span className="size-2 rounded-full bg-ok" /> All {services.length} services operational
+            </span>
+            <span className="text-xs text-faint">ship epics to grow the platform</span>
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {bad.map((id) => (
+              <div key={id} className="flex items-center justify-between text-sm">
+                <span className="font-medium">{SERVICES[id].icon} {SERVICES[id].label}</span>
+                <span className="flex items-center gap-2">
+                  <span className="text-xs font-mono text-subtle">{nodes[id]?.v}</span>
+                  <Badge tone={nodes[id].s === 'down' ? 'danger' : 'warn'}>{nodes[id].s}</Badge>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

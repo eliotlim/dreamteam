@@ -1,4 +1,4 @@
-// Game content: control definitions, task flavor, incidents, infra topology, bots.
+// Game content: services, controls, task flavor, incident scenarios, bots.
 
 export const ROLES = ['pm', 'designer', 'engineer', 'ops'];
 
@@ -10,45 +10,77 @@ export const ROLE_META = {
   spectator: { label: 'Spectator',       icon: '📺', color: '#94a3b8' },
 };
 
+export const REGIONS = ['us-east', 'eu-west', 'ap-south'];
+
+// ---------------------------------------------------------------------------
+// Services. `core` services always exist; others start per difficulty or get
+// unlocked when the matching epic feature ships ("customer feature requests").
+// `tier` drives the diagram layout (left → right).
+// ---------------------------------------------------------------------------
+
+export const SERVICES = {
+  dns:       { label: 'DNS',           icon: '🌐', tier: 0, core: true },
+  lb:        { label: 'Load Balancer', icon: '⚖️', tier: 1, core: true },
+  frontend:  { label: 'Frontend',      icon: '🖥️', tier: 2, core: true },
+  backend:   { label: 'Backend',       icon: '⚙️', tier: 2, core: true },
+  db:        { label: 'Database',      icon: '🗄️', tier: 3, core: true },
+  cdn:       { label: 'CDN',           icon: '📦', tier: 1, unlockFeature: 'Offline mode' },
+  cache:     { label: 'Cache',         icon: '⚡', tier: 3, unlockFeature: 'Blazing-fast dashboards' },
+  queue:     { label: 'Job Queue',     icon: '📬', tier: 3, unlockFeature: 'Smart notifications v3' },
+  payments:  { label: 'PaymentCo API', icon: '💳', tier: 3, unlockFeature: 'One-click checkout' },
+  search:    { label: 'Search',        icon: '🔍', tier: 3, unlockFeature: 'Quantum search bar' },
+  analytics: { label: 'Analytics',     icon: '📊', tier: 3, unlockFeature: 'Realtime vibe dashboard' },
+};
+
+export const SERVICE_EDGES = [
+  ['dns', 'lb'], ['dns', 'cdn'], ['cdn', 'frontend'], ['lb', 'frontend'],
+  ['lb', 'backend'], ['backend', 'db'], ['backend', 'cache'],
+  ['backend', 'queue'], ['backend', 'payments'], ['backend', 'search'],
+  ['backend', 'analytics'],
+];
+
+export const CORE_SERVICES = Object.keys(SERVICES).filter((k) => SERVICES[k].core);
+
 // ---------------------------------------------------------------------------
 // Controls
-// type: toggle (OFF/ON) | slider (0..max) | select (options) | button (press)
-// Critical controls are always dealt into the game because incidents need them.
+// type: toggle (OFF/ON) | slider (min..max) | select (options) | button
+// Critical controls are always dealt because the simulation needs them.
+// Backend replicas can never go to zero — min is 1.
 // ---------------------------------------------------------------------------
 
 export const CRITICAL_CONTROLS = [
-  { key: 'autoscaler',      label: 'Autoscaler',           type: 'toggle', role: 'ops' },
+  { key: 'autoscaler',      label: 'Autoscaler',               type: 'toggle', role: 'ops' },
   { key: 'circuit_breaker', label: 'Payments Circuit Breaker', type: 'toggle', role: 'ops' },
-  { key: 'region',          label: 'Primary Region',       type: 'select', role: 'ops', options: ['us-east', 'eu-west', 'ap-south'] },
-  { key: 'queue_drain',     label: 'Queue Drain Rate',     type: 'slider', role: 'ops', max: 8 },
-  { key: 'restart_backend', label: 'Restart Backend Pods', type: 'button', role: 'ops' },
-  { key: 'replicas',        label: 'Backend Replicas',     type: 'slider', role: 'engineer', max: 8 },
-  { key: 'cache_ttl',       label: 'CDN Cache TTL',        type: 'slider', role: 'engineer', max: 8 },
+  { key: 'dns_primary',     label: 'DNS Primary Record',       type: 'select', role: 'ops', options: REGIONS },
+  { key: 'queue_drain',     label: 'Queue Drain Rate',         type: 'slider', role: 'ops', min: 0, max: 8 },
+  { key: 'restart_backend', label: 'Restart Backend Pods',     type: 'button', role: 'ops' },
+  { key: 'replicas',        label: 'Backend Replicas',         type: 'slider', role: 'engineer', min: 1, max: 8 },
+  { key: 'cache_ttl',       label: 'Cache TTL',                type: 'slider', role: 'engineer', min: 0, max: 8 },
 ];
 
 export const CONTROL_POOL = [
   // PM
-  { key: 'scope_creep',     label: 'Scope Creep Valve',      type: 'slider', role: 'pm', max: 8 },
+  { key: 'scope_creep',     label: 'Scope Creep Valve',      type: 'slider', role: 'pm', min: 0, max: 8 },
   { key: 'stakeholders',    label: 'Stakeholder Alignment',  type: 'toggle', role: 'pm' },
-  { key: 'okr_multiplier',  label: 'OKR Multiplier',         type: 'slider', role: 'pm', max: 8 },
+  { key: 'okr_multiplier',  label: 'OKR Multiplier',         type: 'slider', role: 'pm', min: 0, max: 8 },
   { key: 'roadmap',         label: 'Roadmap Horizon',        type: 'select', role: 'pm', options: ['this week', 'Q3', 'someday'] },
-  { key: 'meeting_load',    label: 'Meeting Load',           type: 'slider', role: 'pm', max: 8 },
+  { key: 'meeting_load',    label: 'Meeting Load',           type: 'slider', role: 'pm', min: 0, max: 8 },
   { key: 'launch_hype',     label: 'Launch Hype Machine',    type: 'toggle', role: 'pm' },
   { key: 'sync_meeting',    label: 'Call a Sync Meeting',    type: 'button', role: 'pm' },
   { key: 'priority',        label: 'Priority Dial',          type: 'select', role: 'pm', options: ['P0', 'P1', 'P2', 'backlog'] },
   // Designer
-  { key: 'border_radius',   label: 'Border Radius',          type: 'slider', role: 'designer', max: 8 },
+  { key: 'border_radius',   label: 'Border Radius',          type: 'slider', role: 'designer', min: 0, max: 8 },
   { key: 'dark_mode',       label: 'Dark Mode',              type: 'toggle', role: 'designer' },
   { key: 'hero_gradient',   label: 'Hero Gradient',          type: 'select', role: 'designer', options: ['sunset', 'ocean', 'cyberpunk', 'beige'] },
-  { key: 'whitespace',      label: 'Whitespace Density',     type: 'slider', role: 'designer', max: 8 },
+  { key: 'whitespace',      label: 'Whitespace Density',     type: 'slider', role: 'designer', min: 0, max: 8 },
   { key: 'figma_sync',      label: 'Figma Sync',             type: 'toggle', role: 'designer' },
-  { key: 'font_size',       label: 'Font Size',              type: 'slider', role: 'designer', max: 8 },
+  { key: 'font_size',       label: 'Font Size',              type: 'slider', role: 'designer', min: 0, max: 8 },
   { key: 'ship_redesign',   label: 'Ship the Redesign',      type: 'button', role: 'designer' },
   { key: 'brand_color',     label: 'Brand Color',            type: 'select', role: 'designer', options: ['coral', 'teal', 'slate', 'hotdog'] },
   // Engineer
   { key: 'flag_checkout',   label: 'Flag: checkout_v2',      type: 'toggle', role: 'engineer' },
   { key: 'flag_ai',         label: 'Flag: ai_assistant',     type: 'toggle', role: 'engineer' },
-  { key: 'retry_backoff',   label: 'Retry Backoff',          type: 'slider', role: 'engineer', max: 8 },
+  { key: 'retry_backoff',   label: 'Retry Backoff',          type: 'slider', role: 'engineer', min: 0, max: 8 },
   { key: 'deploy_target',   label: 'Deploy Target',          type: 'select', role: 'engineer', options: ['dev', 'staging', 'prod', 'yolo'] },
   { key: 'tech_debt',       label: 'Tech Debt Compactor',    type: 'button', role: 'engineer' },
   { key: 'log_level',       label: 'Log Verbosity',          type: 'select', role: 'engineer', options: ['error', 'warn', 'info', 'debug'] },
@@ -56,25 +88,27 @@ export const CONTROL_POOL = [
   { key: 'hotfix',          label: 'Push a Hotfix',          type: 'button', role: 'engineer' },
   // Ops
   { key: 'chaos_monkey',    label: 'Chaos Monkey',           type: 'toggle', role: 'ops' },
-  { key: 'backup_freq',     label: 'Backup Frequency',       type: 'slider', role: 'ops', max: 8 },
-  { key: 'firewall',        label: 'Firewall Strictness',    type: 'slider', role: 'ops', max: 8 },
+  { key: 'backup_freq',     label: 'Backup Frequency',       type: 'slider', role: 'ops', min: 0, max: 8 },
+  { key: 'firewall',        label: 'Firewall Strictness',    type: 'slider', role: 'ops', min: 0, max: 8 },
   { key: 'oncall',          label: 'On-call Rotation',       type: 'select', role: 'ops', options: ['alice', 'bob', 'the intern', 'nobody'] },
   { key: 'clear_cache',     label: 'Flush the Cache',        type: 'button', role: 'ops' },
   { key: 'vpn',             label: 'Office VPN',             type: 'toggle', role: 'ops' },
 ];
 
 // ---------------------------------------------------------------------------
-// Task flavor
+// Task flavor. Epic features unlock services when shipped.
 // ---------------------------------------------------------------------------
 
+export const EPIC_FEATURES = Object.entries(SERVICES)
+  .filter(([, s]) => s.unlockFeature)
+  .map(([id, s]) => ({ title: s.unlockFeature, service: id }));
+
 export const FEATURES = [
-  'AI-powered onboarding', 'Dark mode for the dark mode', 'One-click checkout',
-  'Collaborative cursors', 'Emoji reactions everywhere', 'Blockchain loyalty points',
-  'Infinite scroll settings page', 'Voice-controlled invoices', 'Personalized 404 pages',
-  'Gamified standups', 'Export to PDF (again)', 'Realtime vibe dashboard',
-  'Undo for sent emails', 'Smart notifications v3', 'Self-serve enterprise tier',
-  'Confetti on deploy', 'Keyboard shortcuts overlay', 'Offline mode',
-  'Multi-region avatars', 'Quantum search bar', 'Social login with MySpace',
+  'AI-powered onboarding', 'Dark mode for the dark mode', 'Collaborative cursors',
+  'Emoji reactions everywhere', 'Infinite scroll settings page', 'Voice-controlled invoices',
+  'Personalized 404 pages', 'Gamified standups', 'Export to PDF (again)',
+  'Undo for sent emails', 'Self-serve enterprise tier', 'Confetti on deploy',
+  'Keyboard shortcuts overlay', 'Multi-region avatars', 'Social login with MySpace',
   'Auto-generated release notes', 'Customer health score', 'Dashboard for dashboards',
 ];
 
@@ -89,7 +123,6 @@ export const BUGS = [
   'Profile page renders in Comic Sans', 'Export to PDF exports a JPEG',
 ];
 
-// verb phrasing per control type
 export function instructionFor(control, target) {
   switch (control.type) {
     case 'toggle': return `Set ${control.label} to ${target === 1 ? 'ON' : 'OFF'}`;
@@ -101,36 +134,17 @@ export function instructionFor(control, target) {
 }
 
 // ---------------------------------------------------------------------------
-// Infrastructure topology (client draws this; server tracks status)
-// ---------------------------------------------------------------------------
-
-export const INFRA_NODES = [
-  { id: 'cdn',      label: 'CDN' },
-  { id: 'lb',       label: 'Load Balancer' },
-  { id: 'frontend', label: 'Frontend' },
-  { id: 'backend',  label: 'Backend' },
-  { id: 'db',       label: 'Database' },
-  { id: 'cache',    label: 'Cache' },
-  { id: 'queue',    label: 'Queue' },
-  { id: 'payments', label: 'PaymentCo API' },
-  { id: 'region',   label: 'Region' },
-];
-
-// ---------------------------------------------------------------------------
-// Incidents. `needs` lists control requirements; resolved when all are met.
-// `affects` marks infra nodes degraded/down. `metrics` applied per tick.
+// Incident scenarios. These are *situations* the simulation creates; each has
+// a recovery goal evaluated against live sim state, not a magic dial combo.
+// `requires` gates the scenario on a service existing.
 // ---------------------------------------------------------------------------
 
 export const INCIDENTS = {
   outage: {
     title: 'Backend pods crash-looping',
-    desc: 'OOMKilled. Again. Someone shipped a memory leak.',
-    affects: { backend: 'down', lb: 'degraded' },
-    needs: [
-      { key: 'restart_backend', target: 1 },
-      { key: 'replicas', target: 6 },
-    ],
-    metrics: { err: 28, p95: 320, rps: -30 },
+    desc: 'OOMKilled. Again. Capacity just fell off a cliff.',
+    goal: 'Restart the crashed pods and recover from the overload',
+    hint: 'Press "Restart Backend Pods" — add replicas if you\'re still saturated.',
     logs: [
       ['error', 'backend', 'pod backend-7f9c crashed: OOMKilled (exit 137)'],
       ['error', 'lb', 'upstream connect error: 503 no healthy endpoints'],
@@ -139,59 +153,48 @@ export const INCIDENTS = {
   },
   spike: {
     title: 'Traffic spike — we hit the front page',
-    desc: 'A celebrity posted our 404 page. Traffic is 6x baseline.',
-    affects: { lb: 'degraded', frontend: 'degraded', cache: 'degraded' },
-    needs: [
-      { key: 'autoscaler', target: 1 },
-      { key: 'cache_ttl', target: 8 },
-    ],
-    metrics: { rps: 400, p95: 260, err: 6 },
+    desc: 'A celebrity posted our 404 page. Traffic is 4x baseline and climbing.',
+    goal: 'Get backend utilization back under 90%',
+    hint: 'Scale Backend Replicas, flip the Autoscaler ON, or raise Cache TTL to shed load.',
     logs: [
       ['warn', 'lb', 'connection pool saturated ({n}% utilization)'],
+      ['warn', 'backend', 'request queue depth {n}, shedding load'],
       ['info', 'cdn', 'cache MISS ratio climbing: {n}%'],
-      ['warn', 'frontend', 'render queue depth {n}'],
     ],
   },
   integration: {
     title: 'PaymentCo API is down',
-    desc: 'Their status page says "operational". It is lying.',
-    affects: { payments: 'down', backend: 'degraded' },
-    needs: [
-      { key: 'circuit_breaker', target: 1 },
-    ],
-    metrics: { err: 18, p95: 180 },
+    desc: 'Their status page says "operational". It is lying. Retries are piling up.',
+    goal: 'Flip the circuit breaker to stop the retry storm',
+    hint: 'Set Payments Circuit Breaker to ON — fail fast instead of queueing retries.',
+    requires: 'payments',
     logs: [
       ['error', 'payments', 'POST /v2/charge timeout after 30000ms'],
       ['error', 'backend', 'PaymentGatewayError: ECONNRESET'],
-      ['warn', 'backend', 'payment retry queue growing: {n} pending'],
+      ['warn', 'backend', 'payment retry backlog: {n} pending'],
     ],
   },
   queue: {
     title: 'Queue backlog exploding',
-    desc: 'The email worker died on Friday. It is now very much Monday.',
-    affects: { queue: 'down', backend: 'degraded' },
-    needs: [
-      { key: 'queue_drain', target: 8 },
-    ],
-    metrics: { queue: 60, p95: 90 },
+    desc: 'A batch import dumped a mountain of jobs. Consumers are drowning.',
+    goal: 'Drain the queue below 60 jobs',
+    hint: 'Max out Queue Drain Rate. If payments are flaky too, the circuit breaker helps.',
+    requires: 'queue',
     logs: [
-      ['warn', 'queue', 'backlog depth {n} (threshold: 1000)'],
+      ['warn', 'queue', 'backlog depth {n} (threshold: 200)'],
       ['error', 'queue', 'consumer group rebalancing failed'],
       ['warn', 'backend', 'enqueue latency {n}ms'],
     ],
   },
   failover: {
-    title: 'us-east region degraded',
-    desc: 'The cloud provider tweeted an apology. Fail over. Now.',
-    affects: { region: 'down', db: 'degraded' },
-    needs: [
-      { key: 'region', target: 1 }, // eu-west
-    ],
-    metrics: { err: 32, p95: 400 },
+    title: 'Region outage',
+    desc: 'The cloud provider tweeted an apology. Your primary region is gone.',
+    goal: 'Update the DNS records to point at a healthy region',
+    hint: 'Switch DNS Primary Record to any other region.',
     logs: [
-      ['error', 'region', 'us-east-1: elevated error rates (provider incident)'],
+      ['error', 'dns', 'health check failing for primary record ({n}% packet loss)'],
       ['error', 'db', 'replica lag {n}s and climbing'],
-      ['warn', 'lb', 'health checks failing in us-east: {n}%'],
+      ['warn', 'lb', 'health checks failing in primary region: {n}%'],
     ],
   },
 };
@@ -204,20 +207,27 @@ export const AMBIENT_LOGS = [
   ['info', 'backend', 'GET /api/products 200 {n}ms'],
   ['info', 'backend', 'POST /api/cart 201 {n}ms'],
   ['info', 'frontend', 'hydration complete in {n}ms'],
-  ['info', 'cdn', 'cache HIT /assets/app.js'],
   ['info', 'db', 'checkpoint complete ({n} pages)'],
-  ['info', 'queue', 'processed batch of {n} jobs'],
-  ['warn', 'backend', 'deprecated endpoint /v1/users called'],
   ['info', 'backend', 'GET /api/me 200 {n}ms'],
-  ['info', 'payments', 'webhook delivered ({n}ms)'],
+  ['warn', 'backend', 'deprecated endpoint /v1/users called'],
+  ['info', 'dns', 'zone transfer complete ({n} records)'],
 ];
 
+export const SERVICE_LOGS = {
+  cdn: [['info', 'cdn', 'cache HIT /assets/app.js']],
+  cache: [['info', 'cache', 'GET user:{n} hit (0.4ms)']],
+  queue: [['info', 'queue', 'processed batch of {n} jobs']],
+  payments: [['info', 'payments', 'webhook delivered ({n}ms)']],
+  search: [['info', 'search', 'reindexed {n} documents']],
+  analytics: [['info', 'analytics', 'flushed {n} events to warehouse']],
+};
+
 export const TRACE_ROUTES = [
-  { name: 'GET /checkout', spans: ['cdn', 'lb', 'frontend', 'backend', 'payments', 'db'] },
-  { name: 'GET /dashboard', spans: ['cdn', 'lb', 'frontend', 'backend', 'db'] },
+  { name: 'GET /checkout', spans: ['dns', 'lb', 'frontend', 'backend', 'payments', 'db'] },
+  { name: 'GET /dashboard', spans: ['dns', 'lb', 'frontend', 'backend', 'db'] },
   { name: 'POST /api/cart', spans: ['lb', 'backend', 'cache', 'db'] },
   { name: 'POST /api/signup', spans: ['lb', 'backend', 'db', 'queue'] },
-  { name: 'GET /api/search', spans: ['lb', 'backend', 'cache'] },
+  { name: 'GET /api/search', spans: ['lb', 'backend', 'search'] },
 ];
 
 // ---------------------------------------------------------------------------
@@ -225,7 +235,7 @@ export const TRACE_ROUTES = [
 // ---------------------------------------------------------------------------
 
 export const BOTS = {
-  ceo:     { name: 'ceo-dave',        icon: '💼' },
+  ceo:     { name: 'ceo-dave',         icon: '💼' },
   support: { name: 'customer-support', icon: '🎧' },
   pager:   { name: 'pagerbot',         icon: '🚨' },
   system:  { name: 'dreambot',         icon: '🤖' },

@@ -39,8 +39,9 @@ export default function Board() {
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 h-full content-start">
       <Column title="Backlog" count={g.backlog?.length ?? 0}>
         {(g.backlog || []).map((f) => (
-          <BoardCard key={f} className="opacity-70">
-            <span className="text-faint">✨</span> {f}
+          <BoardCard key={f.title} className="opacity-70">
+            <span className="text-faint">{f.service ? '🧩' : '✨'}</span> {f.title}
+            {f.service && <span className="block text-[10px] text-faint mt-0.5">unlocks a new service</span>}
           </BoardCard>
         ))}
       </Column>

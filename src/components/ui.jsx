@@ -53,6 +53,19 @@ export function Card({ className, ...props }) {
   return <div className={cx('bg-surface border border-line rounded-2xl', className)} {...props} />;
 }
 
+// Fixed-footprint placeholder — reserves space so panels never shift layout.
+export function Skeleton({ className, label }) {
+  return (
+    <div className={cx(
+      'rounded-2xl border border-dashed border-line bg-surface/40',
+      'flex items-center justify-center text-xs text-faint select-none',
+      className,
+    )}>
+      {label}
+    </div>
+  );
+}
+
 export function SectionLabel({ className, children }) {
   return (
     <div className={cx('text-[11px] font-semibold uppercase tracking-widest text-faint', className)}>

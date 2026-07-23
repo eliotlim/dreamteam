@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { CONTROL_SERVICE } from '../../shared/content.js';
 import { Card, Switch, Seg, Button, SectionLabel, cx } from '../components/ui.jsx';
 import { setControl, pressButton } from '../lib/net.js';
 import { useStore } from '../lib/store.js';
@@ -80,6 +81,12 @@ function ButtonControl({ c }) {
 
 const WIDGET = { toggle: ToggleControl, slider: SliderControl, select: SelectControl, button: ButtonControl };
 
+// Single control widget by type — also used by the infra node inspector.
+export function ControlWidget({ c }) {
+  const W = WIDGET[c.type];
+  return W ? <W c={c} /> : null;
+}
+
 function Group({ label, controls }) {
   if (!controls.length) return null;
   return (
@@ -97,16 +104,29 @@ function Group({ label, controls }) {
 
 export default function Controls() {
   const s = useStore();
-  const me = s.g.players[s.you];
+  const g = s.g;
+  const me = g.players[s.you];
   if (!me || me.role === 'spectator' || !me.controls?.length) return null;
 
-  const ops = me.controls.filter((c) => c.crit);
+  // Arcade: the whole console lives on the dashboard. Assisted/realism: infra
+  // controls are operated from their node on the infra map instead — the flat
+  // console keeps only mission dials, plus any crit control whose service
+  // isn't deployed yet (it has no node to live on).
+  const arcade = g.config.mode === 'arcade';
+  const onMap = (c) => CONTROL_SERVICE[c.key] && g.services.includes(CONTROL_SERVICE[c.key]);
+  const ops = me.controls.filter((c) => c.crit && (arcade || !onMap(c)));
   const dials = me.controls.filter((c) => !c.crit);
+  const movedToMap = !arcade && me.controls.some((c) => c.crit && onMap(c));
 
   return (
     <Card className="p-4 space-y-4">
       <Group label="⚙️ Ops console — keeps the site up" controls={ops} />
       <Group label="🎛️ Mission dials — missions target these" controls={dials} />
+      {movedToMap && (
+        <p className="text-xs text-faint">
+          🏗️ Your infra controls live on the <span className="font-semibold">Infra map</span> — tap a service node to operate it.
+        </p>
+      )}
     </Card>
   );
 }

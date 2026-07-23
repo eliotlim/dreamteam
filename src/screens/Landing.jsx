@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { Button, Card, Input, ThemeToggle, SectionLabel } from '../components/ui.jsx';
-import { createRoom, roomExists, connect } from '../lib/net.js';
+import { createRoom, roomInfo, connect } from '../lib/net.js';
 import { useStore } from '../lib/store.js';
 
 export default function Landing() {
   const s = useStore();
   const [name, setName] = useState(() => localStorage.getItem('dt-name') || '');
   const [code, setCode] = useState(() => new URLSearchParams(location.search).get('room')?.toUpperCase() || '');
+  const [pass, setPass] = useState('');
+  const [needPass, setNeedPass] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -32,12 +34,19 @@ export default function Landing() {
     const c = code.trim().toUpperCase();
     if (c.length !== 4) { setErr('Room codes are 4 letters.'); return; }
     setBusy(true); setErr(null);
-    if (!(await roomExists(c).catch(() => false))) {
+    const info = await roomInfo(c, pass).catch(() => ({ exists: false }));
+    if (!info.exists) {
       setErr(`Room ${c} doesn't exist.`);
       setBusy(false);
       return;
     }
-    connect(c, saveName());
+    if (info.hasPassword && !info.passOk) {
+      setNeedPass(true);
+      setErr(pass ? 'Wrong password.' : 'This room is password-protected.');
+      setBusy(false);
+      return;
+    }
+    connect(c, saveName(), pass);
     history.replaceState(null, '', `/?room=${c}`);
   };
 
@@ -80,7 +89,7 @@ export default function Landing() {
             <div className="flex gap-2">
               <Input
                 value={code}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
+                onChange={(e) => { setCode(e.target.value.toUpperCase()); setNeedPass(false); setPass(''); }}
                 onKeyDown={(e) => e.key === 'Enter' && onJoin()}
                 placeholder="CODE"
                 maxLength={4}
@@ -90,6 +99,19 @@ export default function Landing() {
                 Join a team
               </Button>
             </div>
+
+            {needPass && (
+              <Input
+                type="password"
+                value={pass}
+                onChange={(e) => setPass(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && onJoin()}
+                placeholder="🔒 Room password"
+                maxLength={32}
+                autoFocus
+                className="w-full"
+              />
+            )}
 
             {err && <p className="text-danger text-xs">{err}</p>}
           </Card>

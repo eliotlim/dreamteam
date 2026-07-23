@@ -28,18 +28,18 @@ export const INCIDENT_TUNING = { firewallShed: 6, dnsTtlMs: 8000, restoreSecs: 1
 export const MODES = {
   arcade: {
     label: '🕹️ Arcade',
-    blurb: 'Incidents tell you exactly which dials to turn. Mostly dials, pure party.',
+    blurb: 'Incidents tell you exactly which dials to turn, and everything is runnable from the dashboard. Pure party.',
     codeChance: 0.12, triageChance: 0.12, hintCost: 0,
   },
   assisted: {
     label: '🧭 Assisted',
-    blurb: 'Incidents show the goal but not the fix — hints cost 25 points.',
-    codeChance: 0.2, triageChance: 0.18, hintCost: 25,
+    blurb: 'Incidents show the goal and point you at the fix right away — free. Infra is operated from the infra map.',
+    codeChance: 0.2, triageChance: 0.18, hintCost: 0,
   },
   realism: {
     label: '🧠 Realism',
-    blurb: 'Only pager alerts. Read the graphs, find the failing component, fix it yourselves.',
-    codeChance: 0.25, triageChance: 0.2, hintCost: 0,
+    blurb: 'Only pager alerts. Read the graphs, find the failing component, fix it yourselves. Optional runbook hints cost 25 points.',
+    codeChance: 0.25, triageChance: 0.2, hintCost: 25,
   },
 };
 
@@ -76,19 +76,43 @@ export const CORE_SERVICES = Object.keys(SERVICES).filter((k) => SERVICES[k].cor
 // Controls
 // type: toggle (OFF/ON) | slider (min..max) | select (options) | button
 // Critical controls are always dealt because the simulation needs them.
+// Engineers own the infra/SRE consoles (ops owns ticket triage instead).
 // Backend replicas can never go to zero — min is 1.
 // ---------------------------------------------------------------------------
 
 export const CRITICAL_CONTROLS = [
-  { key: 'autoscaler',      label: 'Autoscaler',               type: 'toggle', role: 'ops' },
-  { key: 'circuit_breaker', label: 'Payments Circuit Breaker', type: 'toggle', role: 'ops' },
-  { key: 'dns_primary',     label: 'DNS Primary Record',       type: 'select', role: 'ops', options: REGIONS },
-  { key: 'queue_drain',     label: 'Queue Drain Rate',         type: 'slider', role: 'ops', min: 0, max: 8 },
-  { key: 'restart_backend', label: 'Restart Backend Pods',     type: 'button', role: 'ops' },
-  { key: 'restore_backup',  label: 'Restore DB from Backup',   type: 'button', role: 'ops' },
+  { key: 'autoscaler',      label: 'Autoscaler',               type: 'toggle', role: 'engineer' },
+  { key: 'circuit_breaker', label: 'Payments Circuit Breaker', type: 'toggle', role: 'engineer' },
+  { key: 'dns_primary',     label: 'DNS Primary Record',       type: 'select', role: 'engineer', options: REGIONS },
+  { key: 'queue_drain',     label: 'Queue Drain Rate',         type: 'slider', role: 'engineer', min: 0, max: 8 },
+  { key: 'restart_backend', label: 'Restart Backend Pods',     type: 'button', role: 'engineer' },
+  { key: 'restore_backup',  label: 'Restore DB from Backup',   type: 'button', role: 'engineer' },
   { key: 'replicas',        label: 'Backend Replicas',         type: 'slider', role: 'engineer', min: 1, max: 8 },
   { key: 'cache_ttl',       label: 'Cache TTL',                type: 'slider', role: 'engineer', min: 0, max: 8 },
 ];
+
+// Which service on the infra map each sim-relevant control operates. Drives
+// the node inspector (trigger actions from inside the diagram) and, in
+// assisted/realism mode, moves these controls off the flat console and onto
+// the map. Controls not listed here are pure mission dials.
+export const CONTROL_SERVICE = {
+  dns_primary: 'dns',
+  firewall: 'lb',
+  autoscaler: 'backend',
+  replicas: 'backend',
+  restart_backend: 'backend',
+  hotfix: 'backend',
+  backup_freq: 'db',
+  restore_backup: 'db',
+  cache_ttl: 'cache',
+  clear_cache: 'cache',
+  queue_drain: 'queue',
+  circuit_breaker: 'payments',
+};
+
+export const SERVICE_CONTROLS = Object.entries(CONTROL_SERVICE).reduce(
+  (acc, [key, svc]) => (((acc[svc] ??= []).push(key)), acc), {},
+);
 
 export const CONTROL_POOL = [
   // PM
@@ -165,221 +189,9 @@ export function instructionFor(control, target) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Code review snippets — build features, spin up microservices, and fix bugs
-// by spotting the subtly broken line. Engineers get a lens that marks it.
-// `bug` is the 0-based index into `lines`.
-// ---------------------------------------------------------------------------
+// Code review snippets live in shared/snippets.js — 1000 pre-computed,
+// theme-matched to mission titles so the code always fits the task.
 
-export const CODE_SNIPPETS = [
-  {
-    id: 'cart-total', name: 'cart.js',
-    lines: [
-      '// sum the price of every item in the cart',
-      'function cartTotal(items) {',
-      '  let total = 0;',
-      '  for (let i = 0; i < items.length - 1; i++) {',
-      '    total += items[i].price;',
-      '  }',
-      '  return total;',
-      '}',
-    ],
-    bug: 3, why: 'i < items.length - 1 skips the last item in the cart.',
-  },
-  {
-    id: 'admin-check', name: 'authz.js',
-    lines: [
-      '// only admins may delete projects',
-      'function canDelete(user) {',
-      "  if (user.role = 'admin') {",
-      '    return true;',
-      '  }',
-      '  return false;',
-      '}',
-    ],
-    bug: 2, why: "= assigns instead of comparing — every user becomes an 'admin'.",
-  },
-  {
-    id: 'retry-fetch', name: 'http.js',
-    lines: [
-      '// retry the request up to 3 times',
-      'async function fetchWithRetry(url) {',
-      '  for (let i = 0; i < 3; i++) {',
-      '    const res = fetch(url);',
-      '    if (res.ok) return res;',
-      '  }',
-      "  throw new Error('failed');",
-      '}',
-    ],
-    bug: 3, why: 'Missing await — res is a Promise, so res.ok is always undefined.',
-  },
-  {
-    id: 'clamp-pct', name: 'progress.js',
-    lines: [
-      '// clamp progress between 0 and 100',
-      'function clampPct(v) {',
-      '  if (v < 0) return 0;',
-      '  if (v > 100) return 0;',
-      '  return v;',
-      '}',
-    ],
-    bug: 3, why: 'Values over 100 should clamp to 100, not reset to 0.',
-  },
-  {
-    id: 'error-window', name: 'slo.js',
-    lines: [
-      '// reset the 5xx counter every minute',
-      'function startWindow(state) {',
-      '  state.count = 0;',
-      '  setInterval(() => {',
-      '    state.count = 1;',
-      '  }, 60000);',
-      '}',
-    ],
-    bug: 4, why: 'The window resets the counter to 1, not 0 — errors are overcounted.',
-  },
-  {
-    id: 'latest-events', name: 'feed.js',
-    lines: [
-      '// return the newest N events, newest first',
-      'function latest(events, n) {',
-      '  return events',
-      '    .sort((a, b) => a.ts - b.ts)',
-      '    .slice(0, n);',
-      '}',
-    ],
-    bug: 3, why: 'a.ts - b.ts sorts oldest-first; newest-first needs b.ts - a.ts.',
-  },
-  {
-    id: 'rate-limit', name: 'limiter.js',
-    lines: [
-      '// allow at most `limit` requests per window',
-      'function allow(bucket, limit) {',
-      '  bucket.count += 1;',
-      '  return bucket.count < limit;',
-      '}',
-    ],
-    bug: 3, why: '< blocks the limit-th request — "at most limit" needs <=.',
-  },
-  {
-    id: 'days-between', name: 'dates.js',
-    lines: [
-      '// how many WHOLE days between two timestamps',
-      'function daysBetween(a, b) {',
-      '  const ms = Math.abs(b - a);',
-      '  return Math.round(ms / 86400000);',
-      '}',
-    ],
-    bug: 3, why: 'Math.round counts 2.6 days as 3 — whole days need Math.floor.',
-  },
-  {
-    id: 'strong-pw', name: 'signup.js',
-    lines: [
-      '// password needs a digit AND an uppercase letter',
-      'function isStrong(pw) {',
-      '  return /[0-9]/.test(pw) || /[A-Z]/.test(pw);',
-      '}',
-    ],
-    bug: 2, why: '|| accepts a password that has only one of the two requirements.',
-  },
-  {
-    id: 'display-name', name: 'users.js',
-    lines: [
-      "// find a user's display name, default to 'anon'",
-      'function displayName(users, id) {',
-      '  const u = users.find((x) => x.id === id);',
-      '  if (u.name) return u.name;',
-      "  return 'anon';",
-      '}',
-    ],
-    bug: 3, why: 'find() can return undefined — u.name crashes for unknown ids.',
-  },
-  {
-    id: 'fmt-cents', name: 'money.js',
-    lines: [
-      '// cents to a dollars string: 1205 -> "12.05"',
-      'function fmtCents(cents) {',
-      '  const d = Math.floor(cents / 100);',
-      '  const c = cents % 100;',
-      "  return d + '.' + c;",
-      '}',
-    ],
-    bug: 4, why: 'Cents below 10 lose their leading zero: 1205 becomes "12.5".',
-  },
-  {
-    id: 'paginate', name: 'pager.js',
-    lines: [
-      '// return page `p` (1-based) of `size` items',
-      'function page(items, p, size) {',
-      '  const start = p * size;',
-      '  return items.slice(start, start + size);',
-      '}',
-    ],
-    bug: 2, why: 'Page 1 should start at 0 — the offset needs (p - 1) * size.',
-  },
-  {
-    id: 'rollout', name: 'flags.js',
-    lines: [
-      '// roll out to 20% of users by id hash',
-      'function inRollout(id) {',
-      '  return hash(id) % 100 <= 20;',
-      '}',
-    ],
-    bug: 2, why: '<= 20 matches 21 buckets (0–20) — that is a 21% rollout.',
-  },
-  {
-    id: 'fifo-queue', name: 'worker.js',
-    lines: [
-      '// process jobs first-in, first-out',
-      'function nextJob(queue) {',
-      '  return queue.pop();',
-      '}',
-    ],
-    bug: 2, why: 'pop() takes the newest job (LIFO) — FIFO needs shift().',
-  },
-  {
-    id: 'last-week', name: 'metrics.js',
-    lines: [
-      '// the last 7 days of data points, oldest first',
-      'function lastWeek(points) {',
-      '  return points.slice(-8);',
-      '}',
-    ],
-    bug: 2, why: 'slice(-8) returns eight days, not seven.',
-  },
-  {
-    id: 'abort-ms', name: 'client.js',
-    lines: [
-      '// abort the request after 30 seconds',
-      'const ctl = new AbortController();',
-      'setTimeout(() => ctl.abort(), 30);',
-      'fetch(url, { signal: ctl.signal });',
-    ],
-    bug: 2, why: 'setTimeout takes milliseconds — 30 aborts after 30ms, not 30s.',
-  },
-  {
-    id: 'cache-evict', name: 'session.js',
-    lines: [
-      "// clear this user's cache entries on logout",
-      'function logout(cache, userId) {',
-      '  for (const key of cache.keys()) {',
-      "    if (key.startsWith('user:')) cache.delete(key);",
-      '  }',
-      '}',
-    ],
-    bug: 3, why: "startsWith('user:') nukes EVERY user's entries — needs `user:${userId}`.",
-  },
-  {
-    id: 'semver-sort', name: 'releases.js',
-    lines: [
-      '// sort release versions ascending (1.2.0 < 10.0.0)',
-      'function sortVersions(vs) {',
-      '  return vs.sort();',
-      '}',
-    ],
-    bug: 2, why: "Default sort is lexicographic: '10.0.0' lands before '9.0.0'.",
-  },
-];
 
 // ---------------------------------------------------------------------------
 // Triage tickets — customer requests & bug reports that must be routed to the

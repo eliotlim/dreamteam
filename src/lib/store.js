@@ -56,6 +56,12 @@ export function handleMessage(msg) {
       if (g) g.config = msg.config;
       break;
 
+    case 'room':
+      if (!g) break;
+      if (msg.name !== undefined) g.name = msg.name;
+      if (msg.hasPassword !== undefined) g.hasPassword = msg.hasPassword;
+      break;
+
     case 'phase':
       if (!g) break;
       Object.assign(g, {
@@ -65,6 +71,9 @@ export function handleMessage(msg) {
         players: msg.players, backlog: msg.backlog,
         services: msg.services ?? g.services, nodes: msg.nodes ?? g.nodes,
       });
+      // game end ships the causal ledger + failure analysis for the retro
+      if (msg.events) g.events = msg.events;
+      if (msg.analysis) g.analysis = msg.analysis;
       // sprint boundaries invalidate live work; a fresh game (sprint 1)
       // also invalidates the previous game's telemetry
       if (msg.phase === 'playing' || msg.phase === 'review') { g.tasks = []; g.incident = null; }

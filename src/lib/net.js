@@ -21,14 +21,15 @@ export async function createRoom() {
   return code;
 }
 
-export async function roomExists(code) {
-  const res = await fetch(`/api/rooms/${encodeURIComponent(code)}`);
-  if (!res.ok) return false;
-  const { exists } = await res.json();
-  return exists;
+// Existence + password pre-check: { exists, phase, hasPassword, passOk }
+export async function roomInfo(code, pass = '') {
+  const q = pass ? `?pass=${encodeURIComponent(pass)}` : '';
+  const res = await fetch(`/api/rooms/${encodeURIComponent(code)}${q}`);
+  if (!res.ok) return { exists: false };
+  return res.json();
 }
 
-export function connect(code, name) {
+export function connect(code, name, pass = '') {
   manualClose = false;
   clearTimeout(retryTimer);
   localStorage.setItem('dt-room', code);
@@ -36,6 +37,7 @@ export function connect(code, name) {
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const q = new URLSearchParams({ name, pid: playerId() });
+  if (pass) q.set('pass', pass);
   ws = new WebSocket(`${proto}://${location.host}/api/rooms/${code}/ws?${q}`);
 
   ws.onopen = () => { retries = 0; };
@@ -52,7 +54,7 @@ export function connect(code, name) {
       return;
     }
     patch({ status: 'reconnecting' });
-    retryTimer = setTimeout(() => connect(code, name), Math.min(500 * 2 ** retries, 8000));
+    retryTimer = setTimeout(() => connect(code, name, pass), Math.min(500 * 2 ** retries, 8000));
   };
 }
 
@@ -85,9 +87,14 @@ export const sendChat = (text) => send({ t: 'chat', text });
 export const setControl = (key, value) => send({ t: 'control', key, value });
 export const pressButton = (key) => send({ t: 'control', key, press: true });
 export const guessCodeLine = (taskId, line) => send({ t: 'code_guess', taskId, line });
+export const shipCode = (taskId) => send({ t: 'code_ship', taskId });
 export const pickTriage = (taskId, choice) => send({ t: 'triage_pick', taskId, choice });
 export const requestHint = () => send({ t: 'hint' });
 export const setRole = (role) => send({ t: 'set_role', role });
+export const renameSelf = (name) => send({ t: 'rename', name });
+export const setRoomName = (name) => send({ t: 'set_name', name });
+export const setPassword = (password) => send({ t: 'set_password', password });
+export const makeHost = (pid) => send({ t: 'make_host', pid });
 export const setConfig = (p) => send({ t: 'config', patch: p });
 export const startGame = () => send({ t: 'start' });
 export const nextSprint = () => send({ t: 'next_sprint' });

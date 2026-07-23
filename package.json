@@ -17,6 +17,7 @@
   "license": "MIT",
   "dependencies": {
     "@xyflow/react": "^12.11.2",
+    "qrcode": "^1.5.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-resizable-panels": "^3.0.6"

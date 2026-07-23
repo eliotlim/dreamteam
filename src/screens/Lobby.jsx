@@ -1,9 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import QRCode from 'qrcode';
 import { ROLE_META, INCIDENTS, INCIDENT_LABELS, SERVICES, MODES, CONTROL_POOL } from '../../shared/content.js';
 import {
-  Button, Card, Badge, Avatar, Switch, Seg, ThemeToggle, SectionLabel, Dot, cx,
+  Button, Card, Badge, Avatar, Switch, Seg, ThemeToggle, SectionLabel, Dot, Input, cx,
 } from '../components/ui.jsx';
-import { setRole, setConfig, startGame } from '../lib/net.js';
+import {
+  setRole, setConfig, startGame, renameSelf, setRoomName, setPassword, makeHost,
+} from '../lib/net.js';
 import { useStore } from '../lib/store.js';
 
 const ROLE_CHOICES = ['pm', 'designer', 'engineer', 'ops', 'spectator'];
@@ -45,6 +48,61 @@ function ToggleSetting({ label, desc, checked, onChange }) {
   );
 }
 
+// Inline rename for your own row — commits on Enter/blur, syncs localStorage
+// so the next session greets you by the new name.
+function RenameField({ current, onDone }) {
+  const [val, setVal] = useState(current);
+  const commit = () => {
+    const n = val.trim();
+    if (n && n !== current) {
+      renameSelf(n);
+      localStorage.setItem('dt-name', n);
+    }
+    onDone();
+  };
+  return (
+    <Input
+      value={val}
+      onChange={(e) => setVal(e.target.value)}
+      onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') onDone(); }}
+      onBlur={commit}
+      maxLength={24}
+      autoFocus
+      className="h-8 text-sm w-40"
+    />
+  );
+}
+
+// Host-only password manager: set, update, or remove the lobby password.
+function PasswordRow({ hasPassword, isHost }) {
+  const [pw, setPw] = useState('');
+  if (!isHost) {
+    return hasPassword
+      ? <div className="text-xs text-subtle flex items-center gap-1.5">🔒 This lobby is password-protected.</div>
+      : null;
+  }
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="text-xs text-subtle w-24">{hasPassword ? '🔒 Password set' : '🔓 No password'}</span>
+      <Input
+        value={pw}
+        onChange={(e) => setPw(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter' && pw.trim()) { setPassword(pw.trim()); setPw(''); } }}
+        placeholder={hasPassword ? 'New password…' : 'Set a password…'}
+        maxLength={32}
+        className="h-8 text-xs w-40"
+      />
+      <Button size="sm" variant="outline" disabled={!pw.trim()}
+        onClick={() => { setPassword(pw.trim()); setPw(''); }}>
+        {hasPassword ? 'Update' : 'Set'}
+      </Button>
+      {hasPassword && (
+        <Button size="sm" variant="ghost" onClick={() => setPassword('')}>Remove</Button>
+      )}
+    </div>
+  );
+}
+
 export default function Lobby() {
   const s = useStore();
   const g = s.g;
@@ -53,36 +111,82 @@ export default function Lobby() {
   const cfg = g.config;
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [roomName, setRoomNameLocal] = useState(g.name || '');
+  const [qr, setQr] = useState(null);
+
+  useEffect(() => { setRoomNameLocal(g.name || ''); }, [g.name]);
+
+  const inviteUrl = `${location.origin}/?room=${g.code}`;
+  useEffect(() => {
+    QRCode.toDataURL(inviteUrl, { width: 224, margin: 1 }).then(setQr).catch(() => setQr(null));
+  }, [inviteUrl]);
 
   const players = Object.values(g.players).sort((a, b) => a.joinedAt - b.joinedAt || a.name.localeCompare(b.name));
   const activeCount = players.filter((p) => p.connected && p.role !== 'spectator').length;
 
   const copyLink = async () => {
     try {
-      await navigator.clipboard.writeText(`${location.origin}/?room=${g.code}`);
+      await navigator.clipboard.writeText(inviteUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch { /* clipboard unavailable */ }
   };
 
+  const commitRoomName = () => {
+    const n = roomName.trim().slice(0, 32);
+    if (n !== (g.name || '')) setRoomName(n);
+  };
+
   return (
     <div className="min-h-full flex flex-col">
       <header className="flex items-center justify-between px-5 py-4 max-w-5xl w-full mx-auto">
-        <div className="flex items-center gap-2 font-bold text-lg">🚀 DreamTeam</div>
+        <div className="flex items-center gap-2 font-bold text-lg">🚀 {g.name || 'DreamTeam'}</div>
         <ThemeToggle />
       </header>
 
       <main className="flex-1 w-full max-w-5xl mx-auto px-4 sm:px-5 pb-10 grid gap-5 md:grid-cols-[1fr_360px] content-start">
         {/* left: room + players */}
         <div className="space-y-5">
-          <Card className="p-5 sm:p-6 flex items-center justify-between gap-4 flex-wrap">
-            <div>
-              <SectionLabel>Room code</SectionLabel>
-              <div className="text-3xl sm:text-4xl font-mono font-bold tracking-[0.25em] mt-1">{g.code}</div>
+          <Card className="p-5 sm:p-6 space-y-4">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div className="min-w-0 space-y-3">
+                <div>
+                  <SectionLabel>Room code</SectionLabel>
+                  <div className="text-3xl sm:text-4xl font-mono font-bold tracking-[0.25em] mt-1">{g.code}</div>
+                </div>
+                <div>
+                  <SectionLabel>Startup name</SectionLabel>
+                  {isHost ? (
+                    <Input
+                      value={roomName}
+                      onChange={(e) => setRoomNameLocal(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && e.target.blur()}
+                      onBlur={commitRoomName}
+                      placeholder="Name your startup…"
+                      maxLength={32}
+                      className="mt-1 w-52"
+                    />
+                  ) : (
+                    <div className="mt-1 text-sm font-semibold">{g.name || <span className="text-faint font-normal">unnamed (host can fix that)</span>}</div>
+                  )}
+                </div>
+                <Button variant="outline" size="sm" onClick={copyLink}>
+                  {copied ? 'Copied ✓' : 'Copy invite link'}
+                </Button>
+              </div>
+              {qr && (
+                <div className="flex flex-col items-center gap-1.5">
+                  <img src={qr} alt="Scan to join" className="size-28 sm:size-32 rounded-xl border border-line bg-white" />
+                  <span className="text-[10px] text-faint">scan to join</span>
+                </div>
+              )}
             </div>
-            <Button variant="outline" onClick={copyLink}>
-              {copied ? 'Copied ✓' : 'Copy invite link'}
-            </Button>
+            {(isHost || g.hasPassword) && (
+              <div className="pt-3 border-t border-line">
+                <PasswordRow hasPassword={!!g.hasPassword} isHost={isHost} />
+              </div>
+            )}
           </Card>
 
           <Card className="p-5 sm:p-6 space-y-4">
@@ -94,12 +198,32 @@ export default function Lobby() {
               {players.map((p) => (
                 <li key={p.id} className={cx('flex items-center gap-3', !p.connected && 'opacity-40')}>
                   <Avatar name={p.name} role={p.role} />
-                  <span className="font-medium text-sm flex-1 truncate">
-                    {p.name}
-                    {p.id === s.you && <span className="text-faint"> (you)</span>}
-                    {p.isHost && <Badge tone="accent" className="ml-2">host</Badge>}
-                    {!p.connected && <span className="text-faint text-xs ml-2">offline</span>}
-                  </span>
+                  {p.id === s.you && renaming ? (
+                    <span className="flex-1"><RenameField current={p.name} onDone={() => setRenaming(false)} /></span>
+                  ) : (
+                    <span className="font-medium text-sm flex-1 truncate">
+                      {p.name}
+                      {p.id === s.you && (
+                        <>
+                          <span className="text-faint"> (you)</span>
+                          <button
+                            className="ml-1.5 text-xs text-subtle hover:text-ink cursor-pointer align-middle"
+                            title="Rename yourself"
+                            onClick={() => setRenaming(true)}
+                          >✏️</button>
+                        </>
+                      )}
+                      {p.isHost && <Badge tone="accent" className="ml-2">host</Badge>}
+                      {!p.connected && <span className="text-faint text-xs ml-2">offline</span>}
+                    </span>
+                  )}
+                  {isHost && p.id !== s.you && p.connected && (
+                    <button
+                      className="text-sm text-subtle hover:text-ink cursor-pointer"
+                      title={`Make ${p.name} the host`}
+                      onClick={() => makeHost(p.id)}
+                    >👑</button>
+                  )}
                   <span className="text-sm text-subtle whitespace-nowrap">
                     {ROLE_META[p.role].icon} <span className="hidden sm:inline">{ROLE_META[p.role].label}</span>
                   </span>
@@ -185,6 +309,10 @@ export default function Lobby() {
                 checked={cfg.botChatter} onChange={(on) => setConfig({ botChatter: on })} />
               <ToggleSetting label="Mega mode" desc="crowd play: dials are duplicated across screens and missions need a quorum of teammates"
                 checked={!!cfg.megaMode} onChange={(on) => setConfig({ megaMode: on })} />
+              {cfg.mode === 'realism' && (
+                <ToggleSetting label="Runbook hints" desc={`mid-incident, anyone can pull the runbook for ${MODES.realism.hintCost} pts`}
+                  checked={!!cfg.hintsEnabled} onChange={(on) => setConfig({ hintsEnabled: on })} />
+              )}
               {activeCount > 6 && !cfg.megaMode && (
                 <p className="text-xs text-accent py-2">
                   👥 {activeCount} players — that's a crowd. Mega mode was made for this.

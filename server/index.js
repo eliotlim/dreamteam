@@ -28,10 +28,10 @@ export default {
         return Response.json({ error: 'could not allocate room' }, { status: 500 });
       }
 
-      // GET /api/rooms/:code — check a room exists (join validation)
+      // GET /api/rooms/:code — room existence + password pre-check (join validation)
       let m = path.match(/^\/api\/rooms\/([A-Za-z]{4})$/);
       if (m && request.method === 'GET') {
-        const check = await roomStub(env, m[1]).fetch(new Request(`https://do/exists`));
+        const check = await roomStub(env, m[1]).fetch(new Request(`https://do/exists${url.search}`));
         return new Response(check.body, { headers: { 'Content-Type': 'application/json' } });
       }
 

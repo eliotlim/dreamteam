@@ -3,7 +3,7 @@ import { GUESS_PENALTY, MODES } from '../../shared/content.js';
 import { Card, Badge, Progress, Skeleton, Button, cx } from '../components/ui.jsx';
 import { useNow } from '../lib/hooks.js';
 import { useStore } from '../lib/store.js';
-import { guessCodeLine, pickTriage, requestHint } from '../lib/net.js';
+import { guessCodeLine, shipCode, pickTriage, requestHint } from '../lib/net.js';
 
 const KIND_META = {
   feature: { label: 'FEATURE', tone: 'accent', icon: '✨' },
@@ -90,13 +90,16 @@ function MissionCard({ task, now }) {
   );
 }
 
-// Find-the-bug code review. Engineers get a lens that marks the buggy line.
+// Code review: tap away the bug (the line patches in place), then SHIP.
+// Shipping with the bug still in there crashes prod — engineers get a lens
+// that marks it, and a clean build should just be shipped as-is.
 function CodeMissionCard({ task, now, isEngineer }) {
   const [wrong, flash] = useWrongFlash();
   const meta = CODE_META[task.codeKind] || CODE_META.feature;
   const t = timeInfo(task.createdAt, task.deadlineAt, now);
 
   const tap = (i) => {
+    if (task.patched) return;
     guessCodeLine(task.id, i);
     if (i !== task.bugLine) flash(i);
   };
@@ -110,38 +113,56 @@ function CodeMissionCard({ task, now, isEngineer }) {
       <div>
         <div className="text-[15px] font-semibold leading-snug">{meta.icon} {task.title}</div>
         <div className="text-xs text-subtle mt-0.5">
-          Tap the broken line{isEngineer && <span className="text-accent font-medium"> — your 🔍 lens marks it</span>}
+          {task.patched
+            ? <span className="text-ok font-medium">Patched ✓ — ship it!</span>
+            : isEngineer && task.bugLine < 0
+              ? <span className="text-ok font-medium">Your 🔍 lens sees nothing wrong — ship it as-is</span>
+              : <>Tap anything broken, then ship{isEngineer && <span className="text-accent font-medium"> — your 🔍 lens marks bugs</span>}</>}
         </div>
       </div>
       <div className="rounded-lg bg-raised border border-line overflow-x-auto">
         <div className="font-mono text-[11px] leading-relaxed py-1 min-w-fit">
           <div className="px-2.5 pb-1 text-[10px] text-faint border-b border-line/60 mb-1">{task.snippet.name}</div>
-          {task.snippet.lines.map((ln, i) => (
-            <button
-              key={i}
-              onClick={() => tap(i)}
-              className={cx(
-                'w-full text-left px-2.5 py-px flex items-center gap-2 cursor-pointer whitespace-pre',
-                'hover:bg-accent-soft transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
-                wrong === i && 'bg-danger-soft animate-shake',
-              )}
-            >
-              <span className="text-faint w-4 text-right shrink-0 select-none">{i + 1}</span>
-              <span className="text-ink">{ln}</span>
-              {isEngineer && i === task.bugLine && (
-                <span className="ml-auto pl-2 text-[10px] opacity-70 select-none" title="engineer lens">🐛</span>
-              )}
-            </button>
-          ))}
+          {task.snippet.lines.map((ln, i) => {
+            const fixed = task.patched && i === task.bugLine;
+            return (
+              <button
+                key={i}
+                onClick={() => tap(i)}
+                className={cx(
+                  'w-full text-left px-2.5 py-1 sm:py-px flex items-center gap-2 whitespace-pre',
+                  'transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
+                  task.patched ? 'cursor-default' : 'cursor-pointer hover:bg-accent-soft',
+                  wrong === i && 'bg-danger-soft animate-shake',
+                  fixed && 'bg-ok-soft',
+                )}
+              >
+                <span className="text-faint w-4 text-right shrink-0 select-none">{i + 1}</span>
+                <span className={cx('text-ink', fixed && 'text-ok')}>{ln}</span>
+                {fixed && <span className="ml-auto pl-2 text-[10px] select-none">✅</span>}
+                {isEngineer && !task.patched && i === task.bugLine && (
+                  <span className="ml-auto pl-2 text-[10px] opacity-70 select-none" title="engineer lens">🐛</span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
+      <Button
+        size="sm"
+        className={cx('w-full font-semibold h-10 sm:h-8', !task.patched && task.bugLine >= 0 && 'opacity-90')}
+        onClick={() => shipCode(task.id)}
+      >
+        🚀 Ship it
+      </Button>
       <PenaltyFooter t={t} tone="info" wrongGuesses={task.wrongGuesses} />
     </Card>
   );
 }
 
-// Ticket triage — route it to the right priority. PMs get an instinct marker.
-function TriageMissionCard({ task, now, isPm }) {
+// Ticket triage — route it to the right priority. Triage is ops turf: ops
+// gets an instinct marker on the right call.
+function TriageMissionCard({ task, now, isOps }) {
   const [wrong, flash] = useWrongFlash();
   const t = timeInfo(task.createdAt, task.deadlineAt, now);
 
@@ -162,7 +183,7 @@ function TriageMissionCard({ task, now, isPm }) {
         <span className="text-faint">🎧 </span>“{task.ticketText}”
       </div>
       <div className="text-xs text-subtle">
-        Route it{isPm && <span className="text-accent font-medium"> — your ⭐ instinct marks the call</span>}
+        Route it{isOps && <span className="text-accent font-medium"> — your ⭐ ops instinct marks the call</span>}
       </div>
       <div className="grid grid-cols-2 gap-1.5">
         {task.options.map((opt, i) => (
@@ -170,14 +191,14 @@ function TriageMissionCard({ task, now, isPm }) {
             key={i}
             onClick={() => tap(i)}
             className={cx(
-              'px-2 py-1.5 rounded-lg border text-xs font-medium text-left cursor-pointer transition-colors',
+              'px-2 py-2.5 sm:py-1.5 rounded-lg border text-xs font-medium text-left cursor-pointer transition-colors',
               'border-line hover:bg-accent-soft hover:border-accent/40',
               'outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
               wrong === i && 'bg-danger-soft border-danger animate-shake',
             )}
           >
             {opt}
-            {isPm && i === task.answer && <span className="ml-1 text-[10px] opacity-70" title="PM instinct">⭐</span>}
+            {isOps && i === task.answer && <span className="ml-1 text-[10px] opacity-70" title="ops instinct">⭐</span>}
           </button>
         ))}
       </div>
@@ -228,7 +249,7 @@ export function IncidentCard({ incident, now, compact = false }) {
       )}
       {incident.hintAvailable && !incident.hint && !compact && (
         <Button size="sm" variant="outline" className="w-full" onClick={requestHint}>
-          💡 Pull up the runbook (−{MODES.assisted.hintCost} pts)
+          💡 Pull up the runbook (−{MODES.realism.hintCost} pts)
         </Button>
       )}
       <Progress value={t.pct} tone="danger" />
@@ -253,7 +274,7 @@ export default function Missions() {
         const t = mine[i];
         if (!t) return <Skeleton key={`slot-${i}`} className={SLOT_H} label="waiting for work…" />;
         if (t.kind === 'code') return <CodeMissionCard key={t.id} task={t} now={now} isEngineer={me?.role === 'engineer'} />;
-        if (t.kind === 'triage') return <TriageMissionCard key={t.id} task={t} now={now} isPm={me?.role === 'pm'} />;
+        if (t.kind === 'triage') return <TriageMissionCard key={t.id} task={t} now={now} isOps={me?.role === 'ops'} />;
         return <MissionCard key={t.id} task={t} now={now} />;
       })}
     </div>

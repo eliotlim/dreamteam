@@ -88,6 +88,16 @@ body {
   scrollbar-color: var(--dt-line-strong) transparent;
 }
 
+/* cross-play touch polish: no 300ms double-tap zoom on game controls, no
+   grey tap flash, and no iOS auto-zoom when focusing sub-16px inputs */
+button, [role="switch"], a {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+@media (pointer: coarse) {
+  input:not([type="range"]), select, textarea { font-size: 16px; }
+}
+
 /* range input — minimalist slider */
 input[type="range"] {
   @apply appearance-none bg-transparent w-full;
@@ -106,6 +116,12 @@ input[type="range"]::-moz-range-track {
 }
 input[type="range"]::-moz-range-thumb {
   @apply size-4 rounded-full bg-accent border-0 cursor-pointer;
+}
+/* fatter thumbs + taller hit area on touch screens */
+@media (pointer: coarse) {
+  input[type="range"] { padding-block: 8px; }
+  input[type="range"]::-webkit-slider-thumb { @apply size-5; margin-top: -7px; }
+  input[type="range"]::-moz-range-thumb { @apply size-5; }
 }
 
 /* ------------------------------------------------------------------ motion */

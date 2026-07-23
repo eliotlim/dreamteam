@@ -58,7 +58,7 @@ function Header() {
 
   return (
     <header className="h-12 sm:h-14 shrink-0 border-b border-line bg-surface/80 backdrop-blur flex items-center gap-2 sm:gap-4 px-3 sm:px-4">
-      <span className="font-bold whitespace-nowrap">🚀 <span className="hidden md:inline">DreamTeam</span></span>
+      <span className="font-bold whitespace-nowrap">🚀 <span className="hidden md:inline">{g.name || 'DreamTeam'}</span></span>
       <Badge className="font-mono tracking-widest max-sm:hidden">{g.code}</Badge>
       <Badge tone="accent">S{g.sprint}/{g.config.sprintCount}</Badge>
       <span className={cx(
@@ -191,6 +191,7 @@ function PlayerDesktop() {
   const s = useStore();
   const [view, setView] = useState('console');
   const g = s.g;
+  const arcade = g.config.mode === 'arcade';
   const myTasks = g.tasks.filter((t) => t.displayPid === s.you).length;
   const badNodes = Object.values(g.nodes || {}).filter((n) => n.s !== 'ok').length;
   const lastChatTs = g.chat.at(-1)?.ts ?? 0;
@@ -219,6 +220,8 @@ function PlayerDesktop() {
                   <MetricsGrid compact />
                 </div>
               </div>
+              {/* arcade: the whole company runs from this one dashboard */}
+              {arcade && <Infra />}
             </div>
           </div>
         )}
@@ -247,6 +250,7 @@ function PlayerMobile() {
   const s = useStore();
   const [tab, setTab] = useState('console');
   const g = s.g;
+  const arcade = g.config.mode === 'arcade';
   const myTasks = g.tasks.filter((t) => t.displayPid === s.you).length;
   const badNodes = Object.values(g.nodes || {}).filter((n) => n.s !== 'ok').length;
   const badge = { console: myTasks + (g.incident ? 1 : 0), infra: badNodes };
@@ -254,7 +258,7 @@ function PlayerMobile() {
   return (
     <>
       <div className="flex-1 min-h-0 overflow-y-auto p-3 pb-1">
-        {tab === 'console' && <div className="space-y-3"><Missions /><Controls /></div>}
+        {tab === 'console' && <div className="space-y-3"><Missions /><Controls />{arcade && <Infra />}</div>}
         {tab === 'board' && <Board />}
         {tab === 'chat' && <Card className="h-[72vh] overflow-hidden flex flex-col"><Chat /></Card>}
         {tab === 'obs' && <Obs />}

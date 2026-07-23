@@ -23,6 +23,8 @@ const TONE_SOLID = {
 
 const BTN_VARIANTS = {
   primary: 'bg-accent text-on-accent hover:opacity-90 active:scale-[0.98] shadow-sm',
+  // console action buttons: unmistakably pressable without shouting primary
+  action: 'bg-accent-soft text-accent border border-accent/50 hover:bg-accent hover:text-on-accent active:scale-[0.98]',
   subtle: 'bg-raised text-ink hover:bg-line active:scale-[0.98]',
   ghost: 'text-subtle hover:text-ink hover:bg-raised',
   danger: 'bg-danger text-white hover:opacity-90 active:scale-[0.98]',

@@ -258,7 +258,7 @@ function PlayerMobile() {
   return (
     <>
       <div className="flex-1 min-h-0 overflow-y-auto p-3 pb-1">
-        {tab === 'console' && <div className="space-y-3"><Missions /><Controls />{arcade && <Infra />}</div>}
+        {tab === 'console' && <div className="space-y-3"><Missions /><Controls flat />{arcade && <Infra />}</div>}
         {tab === 'board' && <Board />}
         {tab === 'chat' && <Card className="h-[72vh] overflow-hidden flex flex-col"><Chat /></Card>}
         {tab === 'obs' && <Obs />}

@@ -4,13 +4,15 @@ import {
   TRIAGE_TICKETS, TRIAGE_OPTIONS, GUESS_PENALTY, INCIDENT_TUNING,
   SERVICES, CORE_SERVICES, EPIC_FEATURES, REGIONS, AMBIENT_LOGS, SERVICE_LOGS,
   TRACE_ROUTES, BOTS, CEO_SPRINT_LINES, CEO_INCIDENT_LINES, instructionFor,
-  NAME_ADJECTIVES, NAME_NOUNS, CONTROL_SERVICE,
+  NAME_ADJECTIVES, NAME_NOUNS, CONTROL_SERVICE, DESIGN_COLORS, DESIGN_RADII,
 } from '../shared/content.js';
 import { CODE_SNIPPETS, SNIPPETS_BY_TITLE } from '../shared/snippets.js';
 
 const TICK_MS = 1000;
 const REVIEW_SECONDS = 15;
 const PER_REPLICA_RPS = 35;
+// a room nobody has touched for this long deletes itself
+const ROOM_TTL_MS = 30 * 60 * 1000;
 
 // Deterministic starting values for the ops console — the sim needs a sane
 // initial state (3 pods, warm-ish cache, moderate drain, nothing to zero).
@@ -26,6 +28,7 @@ export const DEFAULT_CONFIG = {
   hintsEnabled: true,     // realism only: allow paid runbook hints
   codeChance: MODES.arcade.codeChance,       // chance a task is a find-the-bug code review
   triageChance: MODES.arcade.triageChance,   // chance a task is a ticket triage
+  designChance: MODES.arcade.designChance,   // chance a task is a design review
   sprintCount: 3,
   // --- advanced ---
   sprintSeconds: 150,
@@ -94,6 +97,7 @@ function freshState(code) {
   return {
     code,
     createdAt: Date.now(),
+    lastActiveAt: Date.now(),
     phase: 'lobby',
     name: '',
     password: null,
@@ -152,6 +156,8 @@ export class GameRoom extends DurableObject {
           this.g.config.codeChance ??= MODES.arcade.codeChance;
           this.g.config.triageChance ??= MODES.arcade.triageChance;
         }
+        this.g.config.designChance ??= MODES[this.g.config.mode]?.designChance ?? MODES.arcade.designChance;
+        this.g.lastActiveAt ??= Date.now();
         this.g.config.megaMode ??= false;
         this.g.config.hintsEnabled ??= true;
         this.g.usedSnippets ??= [];
@@ -167,7 +173,18 @@ export class GameRoom extends DurableObject {
         this.g.openEv ??= { sprint: null, incident: null, crash: null, badDeploy: null };
         this.g.analysis ??= null;
       }
+      // every live room keeps an alarm pending — ticks while playing, the
+      // idle sweep otherwise — so rooms persisted before TTLs existed need one
+      if (this.g && (await ctx.storage.getAlarm()) === null) {
+        ctx.storage.setAlarm(Date.now() + ROOM_TTL_MS);
+      }
     });
+  }
+
+  // any human interaction marks the room active; the idle sweep in alarm()
+  // reclaims rooms untouched for ROOM_TTL_MS
+  touch() {
+    if (this.g) this.g.lastActiveAt = Date.now();
   }
 
   persist() {
@@ -187,6 +204,7 @@ export class GameRoom extends DurableObject {
       if (!this.g) {
         this.g = freshState(url.searchParams.get('code') || '????');
         this.persist();
+        this.ctx.storage.setAlarm(Date.now() + ROOM_TTL_MS);
       }
       return Response.json({ ok: true, code: this.g.code });
     }
@@ -230,6 +248,7 @@ export class GameRoom extends DurableObject {
 
   handleJoin(pid, name, ws) {
     const g = this.g;
+    this.touch();
     g.creatorPid ??= pid; // first joiner founded the lobby — hosting defaults to them
     let p = g.players[pid];
     if (!p) {
@@ -329,6 +348,7 @@ export class GameRoom extends DurableObject {
     if (!att || !g) return;
     const p = g.players[att.pid];
     if (!p) return;
+    this.touch();
 
     switch (msg.t) {
       case 'set_role': {
@@ -417,6 +437,10 @@ export class GameRoom extends DurableObject {
         this.answerTask(p, msg.taskId, 'triage', (task) => Number(msg.choice) === task.answer);
         break;
       }
+      case 'design_pick': {
+        this.answerTask(p, msg.taskId, 'design', (task) => Number(msg.choice) === task.answer);
+        break;
+      }
       case 'hint': {
         // paid runbook pulls exist only in realism mode (assisted shows the
         // hint from the start, free) and only if the lobby enabled them
@@ -454,8 +478,8 @@ export class GameRoom extends DurableObject {
       const { startingServices, ...knobs } = PRESETS[patch.preset];
       Object.assign(c, structuredClone(DEFAULT_CONFIG), knobs, {
         preset: patch.preset, incidents: c.incidents, mode: c.mode, megaMode: c.megaMode,
-        codeChance: c.codeChance, triageChance: c.triageChance, botChatter: c.botChatter,
-        hintsEnabled: c.hintsEnabled,
+        codeChance: c.codeChance, triageChance: c.triageChance, designChance: c.designChance,
+        botChatter: c.botChatter, hintsEnabled: c.hintsEnabled,
       });
       this.g.services = [...CORE_SERVICES, ...startingServices];
     }
@@ -463,6 +487,7 @@ export class GameRoom extends DurableObject {
       c.mode = patch.mode;
       c.codeChance = MODES[patch.mode].codeChance;
       c.triageChance = MODES[patch.mode].triageChance;
+      c.designChance = MODES[patch.mode].designChance;
     }
     num('sprintSeconds', 45, 600);
     num('sprintCount', 1, 10);
@@ -480,6 +505,7 @@ export class GameRoom extends DurableObject {
     num('spikeMult', 2, 8);
     num('codeChance', 0, 1);
     num('triageChance', 0, 1);
+    num('designChance', 0, 1);
     if (typeof patch.botChatter === 'boolean') c.botChatter = patch.botChatter;
     if (typeof patch.megaMode === 'boolean') c.megaMode = patch.megaMode;
     if (typeof patch.hintsEnabled === 'boolean') c.hintsEnabled = patch.hintsEnabled;
@@ -660,6 +686,7 @@ export class GameRoom extends DurableObject {
     g.events = [];
     g.openEv = { sprint: null, incident: null, crash: null, badDeploy: null };
     g.analysis = null;
+    for (const p of Object.values(g.players)) p.dialHints = 0;
     this.buildBacklog();
     this.dealAllControls();
     this.startSprint(1);
@@ -819,7 +846,8 @@ export class GameRoom extends DurableObject {
       : 'The site is down and morale is downer. Mandatory fun retreat next week.');
     this.persist();
     this.broadcastPhase();
-    this.ctx.storage.deleteAlarm();
+    // ticking stops, but the idle sweep must keep running
+    this.ctx.storage.setAlarm(Date.now() + ROOM_TTL_MS);
   }
 
   // Post-game cause analysis: read the ledger, spot the team's recurring
@@ -900,7 +928,8 @@ export class GameRoom extends DurableObject {
     const { startingServices = [] } = PRESETS[g.config.preset] || {};
     g.services = [...CORE_SERVICES, ...startingServices];
     this.persist();
-    this.ctx.storage.deleteAlarm();
+    // ticking stops, but the idle sweep must keep running
+    this.ctx.storage.setAlarm(Date.now() + ROOM_TTL_MS);
     this.broadcast({ t: 'snapshot', g: this.publicState(), now: Date.now() });
   }
 
@@ -1135,12 +1164,26 @@ export class GameRoom extends DurableObject {
   async alarm() {
     const g = this.g;
     if (!g) return;
+    // idle sweep: sockets present keep the room alive; a room untouched for
+    // ROOM_TTL_MS with nobody connected deletes itself
+    if (this.ctx.getWebSockets().length > 0) {
+      g.lastActiveAt = Date.now();
+    } else if (Date.now() - (g.lastActiveAt ?? g.createdAt) >= ROOM_TTL_MS) {
+      this.g = null;
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.deleteAll();
+      return;
+    }
     if (g.phase === 'review') {
       if (Date.now() >= g.reviewEndsAt) { this.startSprint(g.sprint + 1); return; }
       this.ctx.storage.setAlarm(Date.now() + TICK_MS);
       return;
     }
-    if (g.phase !== 'playing') return;
+    if (g.phase !== 'playing') {
+      // lobby / ended rooms wake only to re-check idleness
+      this.ctx.storage.setAlarm((g.lastActiveAt ?? Date.now()) + ROOM_TTL_MS);
+      return;
+    }
 
     const now = Date.now();
     g.tickCount++;
@@ -1261,10 +1304,14 @@ export class GameRoom extends DurableObject {
     );
     if (!displays.length) return;
 
-    // one roll decides the task family: triage ticket, code review, or dial
+    // one roll decides the task family: triage, code review, design review, or dial
     const roll = Math.random();
-    if (roll < g.config.triageChance && this.spawnTriageTask(displays)) return;
-    if (roll < g.config.triageChance + g.config.codeChance && this.spawnCodeTask(displays)) return;
+    let band = g.config.triageChance;
+    if (roll < band && this.spawnTriageTask(displays)) return;
+    band += g.config.codeChance;
+    if (roll < band && this.spawnCodeTask(displays)) return;
+    band += g.config.designChance ?? 0;
+    if (roll < band && this.spawnDesignTask(displays)) return;
 
     // mega mode: dial missions demand a quorum of holders instead of one owner
     if (g.config.megaMode && this.spawnQuorumTask(displays)) return;
@@ -1280,6 +1327,16 @@ export class GameRoom extends DurableObject {
     const target = this.rollTarget(control);
     const isBug = Math.random() < g.config.bugChance;
     const item = this.pickBacklogItem(isBug);
+    const display = this.pickDisplay(displays);
+
+    // tutorial nudge: everyone's first ticket or two says where the dial
+    // actually lives — new players don't yet know what's on whose console
+    let locHint = null;
+    display.dialHints ??= 0;
+    if (display.dialHints < 2) {
+      display.dialHints++;
+      locHint = owner.id === display.id ? 'you' : owner.name;
+    }
 
     const task = {
       id: uid(),
@@ -1287,7 +1344,8 @@ export class GameRoom extends DurableObject {
       title: item.title,
       epicService: !isBug && item.service && !g.services.includes(item.service) ? item.service : null,
       instr: instructionFor(control, target),
-      displayPid: this.pickDisplay(displays).id,
+      locHint,
+      displayPid: display.id,
       ownerPid: owner.id,
       ownerName: owner.name,
       controlKey: control.key,
@@ -1408,7 +1466,10 @@ export class GameRoom extends DurableObject {
     const title = codeKind === 'bug' ? `Fix: ${item.title}`
       : codeKind === 'service' ? `Build service: ${item.title}`
       : `Build: ${item.title}`;
-    const display = this.pickDisplay(displays);
+    // code review is engineering turf: reviews land on engineer screens first
+    // (mirroring triage → ops and design QA → designers)
+    const engDisplays = displays.filter((p) => p.role === 'engineer');
+    const display = this.pickDisplay(engDisplays.length ? engDisplays : displays);
 
     // a quarter of feature/service builds are already correct — but bug-fix
     // missions always contain the bug you were sent to fix
@@ -1428,6 +1489,52 @@ export class GameRoom extends DurableObject {
       displayPid: display.id, ownerPid: display.id, ownerName: display.name,
       createdAt: Date.now(), deadlineAt: Date.now() + this.taskDeadline(1.8),
       status: 'active', points: 150,
+    };
+    g.tasks.push(task);
+    this.broadcast({ t: 'task', task });
+    return true;
+  }
+
+  // Design review — visual QA missions. Design is designer turf: they land on
+  // designer screens first, and designers get an instinct marker on the right
+  // option. Variants: match the swatch, spot the centered dot, match a radius.
+  spawnDesignTask(displays) {
+    const g = this.g;
+    const dsgDisplays = displays.filter((p) => p.role === 'designer');
+    const display = this.pickDisplay(dsgDisplays.length ? dsgDisplays : displays);
+    const variant = pick(['shade', 'centered', 'radius']);
+    let title, instr, prompt = null, options, answer;
+
+    if (variant === 'shade') {
+      const c = pick(DESIGN_COLORS);
+      // one exact match among near-miss lightnesses
+      const deltas = shuffle([0, ...shuffle([-14, -8, 8, 14]).slice(0, 3)]);
+      answer = deltas.indexOf(0);
+      options = deltas.map((d) => `hsl(${c.h} ${c.s}% ${clamp(c.l + d, 8, 92)}%)`);
+      prompt = { swatch: `hsl(${c.h} ${c.s}% ${c.l}%)`, name: c.name };
+      title = `Design QA: ${c.name}`;
+      instr = 'Tap the swatch that matches the brand color exactly';
+    } else if (variant === 'centered') {
+      const off = () => pick([-1, 1]) * (4 + rnd(4));
+      options = shuffle([[0, 0], [off(), 0], [0, off()], [off(), off()]]);
+      answer = options.findIndex(([x, y]) => x === 0 && y === 0);
+      title = 'Design QA: alignment pass';
+      instr = 'Tap the card whose dot is perfectly centered';
+    } else {
+      options = shuffle(DESIGN_RADII).slice(0, 4);
+      const target = pick(options);
+      answer = options.indexOf(target);
+      prompt = { radius: target };
+      title = 'Design QA: corner radius';
+      instr = `Tap the div with border-radius: ${target}px`;
+    }
+
+    const task = {
+      id: uid(), kind: 'design', designKind: variant, title, instr,
+      prompt, options, answer, wrongGuesses: 0,
+      displayPid: display.id, ownerPid: display.id, ownerName: display.name,
+      createdAt: Date.now(), deadlineAt: Date.now() + this.taskDeadline(1.2),
+      status: 'active', points: 110,
     };
     g.tasks.push(task);
     this.broadcast({ t: 'task', task });

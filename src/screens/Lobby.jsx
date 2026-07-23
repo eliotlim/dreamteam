@@ -352,6 +352,8 @@ export default function Lobby() {
                     onChange={(v) => setConfig({ codeChance: v })} />
                   <NumberSetting label="Triage ratio" value={cfg.triageChance} min={0} max={0.6} step={0.05}
                     onChange={(v) => setConfig({ triageChance: v })} />
+                  <NumberSetting label="Design review ratio" value={cfg.designChance ?? 0} min={0} max={0.6} step={0.05}
+                    onChange={(v) => setConfig({ designChance: v })} />
                   <NumberSetting label="Miss penalty" value={cfg.missPenalty} min={0} max={25} suffix=" hp"
                     onChange={(v) => setConfig({ missPenalty: v })} />
                   <NumberSetting label="Incident drain" value={cfg.incidentDrainPerSec} min={0} max={3} step={0.1} suffix="/s"

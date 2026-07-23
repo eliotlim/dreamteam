@@ -29,17 +29,17 @@ export const MODES = {
   arcade: {
     label: '🕹️ Arcade',
     blurb: 'Incidents tell you exactly which dials to turn, and everything is runnable from the dashboard. Pure party.',
-    codeChance: 0.12, triageChance: 0.12, hintCost: 0,
+    codeChance: 0.12, triageChance: 0.12, designChance: 0.12, hintCost: 0,
   },
   assisted: {
     label: '🧭 Assisted',
     blurb: 'Incidents show the goal and point you at the fix right away — free. Infra is operated from the infra map.',
-    codeChance: 0.2, triageChance: 0.18, hintCost: 0,
+    codeChance: 0.2, triageChance: 0.18, designChance: 0.15, hintCost: 0,
   },
   realism: {
     label: '🧠 Realism',
     blurb: 'Only pager alerts. Read the graphs, find the failing component, fix it yourselves. Optional runbook hints cost 25 points.',
-    codeChance: 0.25, triageChance: 0.2, hintCost: 25,
+    codeChance: 0.25, triageChance: 0.2, designChance: 0.15, hintCost: 25,
   },
 };
 
@@ -221,6 +221,26 @@ export const TRIAGE_TICKETS = [
   { kind: 'request', from: 'support', text: 'One free-tier user wants Comic Sans as a font option.', answer: 3, why: 'No. (Politely.)' },
   { kind: 'request', from: 'support', text: 'Sales: tomorrow\'s demo for our biggest prospect needs the SSO flag enabled — it\'s built and tested.', answer: 1, why: 'Time-boxed revenue opportunity, zero outage — schedule it immediately.' },
 ];
+
+// ---------------------------------------------------------------------------
+// Design review missions — visual QA for the designer's eye. Three variants:
+// shade (match the brand swatch exactly), centered (spot the dead-centered
+// dot), radius (match a border radius). Options are generated server-side
+// from these bases; designers get an instinct marker on the right one.
+// ---------------------------------------------------------------------------
+
+export const DESIGN_COLORS = [
+  { name: 'brand indigo', h: 243, s: 75, l: 59 },
+  { name: 'coral',        h: 9,   s: 85, l: 62 },
+  { name: 'teal',         h: 172, s: 66, l: 40 },
+  { name: 'amber',        h: 38,  s: 92, l: 50 },
+  { name: 'rose',         h: 336, s: 78, l: 58 },
+  { name: 'sky',          h: 199, s: 89, l: 48 },
+  { name: 'lime',         h: 84,  s: 70, l: 45 },
+  { name: 'violet',       h: 262, s: 72, l: 60 },
+];
+
+export const DESIGN_RADII = [2, 6, 10, 16, 24];
 
 // ---------------------------------------------------------------------------
 // Incident scenarios. These are *situations* the simulation creates; each has

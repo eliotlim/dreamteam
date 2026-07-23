@@ -98,9 +98,20 @@ button, [role="switch"], a {
   input:not([type="range"]), select, textarea { font-size: 16px; }
 }
 
-/* range input — minimalist slider */
+/* range input — minimalist slider. pan-y keeps a touch that starts on the
+   slider able to scroll the page vertically (horizontal drags still slide) */
 input[type="range"] {
   @apply appearance-none bg-transparent w-full;
+  touch-action: pan-y;
+}
+
+/* the infra map disables its own pan/zoom, but ReactFlow still stamps
+   touch-action:none on pane and nodes — that turns the diagram into a
+   scroll dead zone on touch screens. Let vertical drags scroll through. */
+@media (pointer: coarse) {
+  .react-flow__pane, .react-flow__viewport, .react-flow__node {
+    touch-action: pan-y !important;
+  }
 }
 input[type="range"]::-webkit-slider-runnable-track {
   @apply h-1.5 rounded-full bg-line;
@@ -142,6 +153,13 @@ input[type="range"]::-moz-range-thumb {
   50% { opacity: 0.35; }
 }
 .animate-blink { animation: dt-blink 1s step-start infinite; }
+
+/* retro entrance: sections rise in one after another (delay set inline) */
+@keyframes dt-rise {
+  0% { transform: translateY(16px); opacity: 0; }
+  100% { transform: none; opacity: 1; }
+}
+.animate-rise { animation: dt-rise 0.55s ease-out both; }
 
 @keyframes dt-shake {
   0%, 100% { transform: translateX(0); }

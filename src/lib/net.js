@@ -89,6 +89,7 @@ export const pressButton = (key) => send({ t: 'control', key, press: true });
 export const guessCodeLine = (taskId, line) => send({ t: 'code_guess', taskId, line });
 export const shipCode = (taskId) => send({ t: 'code_ship', taskId });
 export const pickTriage = (taskId, choice) => send({ t: 'triage_pick', taskId, choice });
+export const pickDesign = (taskId, choice) => send({ t: 'design_pick', taskId, choice });
 export const requestHint = () => send({ t: 'hint' });
 export const setRole = (role) => send({ t: 'set_role', role });
 export const renameSelf = (name) => send({ t: 'rename', name });

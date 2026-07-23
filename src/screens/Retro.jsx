@@ -1,6 +1,29 @@
+import { useEffect, useState } from 'react';
 import { Card, Button, Stat, ThemeToggle, SectionLabel, cx } from '../components/ui.jsx';
 import { restartGame } from '../lib/net.js';
 import { useStore } from '../lib/store.js';
+
+// the little end-of-game moment: the score ticks up while sections rise in
+function useCountUp(target, { duration = 1200, delay = 400 } = {}) {
+  const [v, setV] = useState(0);
+  useEffect(() => {
+    let raf;
+    const t0 = performance.now() + delay;
+    const step = (t) => {
+      const p = Math.max(0, Math.min(1, (t - t0) / duration));
+      setV(Math.round(target * (1 - (1 - p) ** 3)));
+      if (p < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration, delay]);
+  return v;
+}
+
+// staggered entrance wrapper — everything stays scrollable underneath
+function Rise({ delay, children }) {
+  return <div className="animate-rise" style={{ animationDelay: `${delay}s` }}>{children}</div>;
+}
 
 const EV_META = {
   sprint:      { icon: '🏁', bar: 'bg-line-strong' },
@@ -114,14 +137,16 @@ export default function Retro() {
   const g = s.g;
   const me = g.players[s.you];
   const st = g.stats;
+  const score = useCountUp(g.score);
 
   return (
     <div className="min-h-full flex flex-col">
       <header className="flex justify-end p-4"><ThemeToggle /></header>
       <main className="flex-1 flex items-center justify-center p-6">
         <div className="w-full max-w-3xl space-y-6">
+          <Rise delay={0}>
           <div className="text-center space-y-2">
-            <div className="text-6xl">{g.victory ? '🏆' : '🪦'}</div>
+            <div className="text-6xl animate-pop">{g.victory ? '🏆' : '🪦'}</div>
             <h1 className="text-3xl font-bold">
               {g.victory ? 'You shipped it!' : 'The startup ran out of runway'}
             </h1>
@@ -130,10 +155,12 @@ export default function Retro() {
                 ? `${g.config.sprintCount} sprint${g.config.sprintCount === 1 ? '' : 's'} survived. The roadmap is a smoking crater of success.`
                 : 'Team health hit zero. The post-mortem will be blameless. Mostly.'}
             </p>
-            <div className="text-5xl font-bold text-accent tabular-nums pt-2">{g.score}</div>
+            <div className="text-5xl font-bold text-accent tabular-nums pt-2">{score}</div>
             <SectionLabel>final score</SectionLabel>
           </div>
+          </Rise>
 
+          <Rise delay={0.5}>
           <Card className="p-6 space-y-5">
             <div className="grid grid-cols-3 sm:grid-cols-6 gap-4 text-center">
               <Stat label="Shipped" value={st.shipped} tone="accent" />
@@ -171,10 +198,12 @@ export default function Retro() {
               </table>
             )}
           </Card>
+          </Rise>
 
-          <Analysis items={g.analysis} />
-          <Gantt events={g.events} />
+          <Rise delay={1.0}><Analysis items={g.analysis} /></Rise>
+          <Rise delay={1.4}><Gantt events={g.events} /></Rise>
 
+          <Rise delay={1.7}>
           {me?.isHost ? (
             <Button size="lg" className="w-full" onClick={restartGame}>
               Back to lobby — run it back
@@ -182,6 +211,7 @@ export default function Retro() {
           ) : (
             <p className="text-center text-subtle text-sm">Waiting for the host to restart…</p>
           )}
+          </Rise>
         </div>
       </main>
     </div>

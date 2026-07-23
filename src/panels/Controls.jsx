@@ -65,8 +65,8 @@ function ButtonControl({ c }) {
   return (
     <div className="h-14 flex items-center">
       <Button
-        variant="subtle"
-        className={cx('w-full border border-line-strong font-semibold h-11', flash && 'bg-accent text-on-accent')}
+        variant={flash ? 'primary' : 'action'}
+        className="w-full font-semibold h-11"
         onClick={() => {
           pressButton(c.key);
           setFlash(true);
@@ -102,7 +102,7 @@ function Group({ label, controls }) {
   );
 }
 
-export default function Controls() {
+export default function Controls({ flat = false }) {
   const s = useStore();
   const g = s.g;
   const me = g.players[s.you];
@@ -111,8 +111,9 @@ export default function Controls() {
   // Arcade: the whole console lives on the dashboard. Assisted/realism: infra
   // controls are operated from their node on the infra map instead — the flat
   // console keeps only mission dials, plus any crit control whose service
-  // isn't deployed yet (it has no node to live on).
-  const arcade = g.config.mode === 'arcade';
+  // isn't deployed yet (it has no node to live on). `flat` (mobile) forces
+  // the arcade layout: diagrams are for looking at, not for tapping through.
+  const arcade = flat || g.config.mode === 'arcade';
   const onMap = (c) => CONTROL_SERVICE[c.key] && g.services.includes(CONTROL_SERVICE[c.key]);
   const ops = me.controls.filter((c) => c.crit && (arcade || !onMap(c)));
   const dials = me.controls.filter((c) => !c.crit);

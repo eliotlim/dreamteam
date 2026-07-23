@@ -92,6 +92,17 @@ export function handleMessage(msg) {
       } else {
         g.doneLog.push({ ...t, finishedAt: Date.now() });
         cap(g.doneLog, 12);
+        if (t.status === 'done') {
+          // success linger: keep a celebrating ghost of the card up briefly so
+          // a correct pick lands as a win instead of the card just vanishing
+          const ghost = { ...t, celebrate: true };
+          g.tasks.push(ghost);
+          setTimeout(() => {
+            if (!state.g?.tasks.includes(ghost)) return;
+            state.g.tasks = state.g.tasks.filter((x) => x !== ghost);
+            emit();
+          }, 1100);
+        }
       }
       break;
     }

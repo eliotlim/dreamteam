@@ -2,7 +2,7 @@ import { Badge, Avatar, Progress, SectionLabel, cx } from '../components/ui.jsx'
 import { useNow } from '../lib/hooks.js';
 import { useStore } from '../lib/store.js';
 
-const KIND_ICON = { feature: '✨', bug: '🐛', incident: '🚨', code: '👨‍💻', triage: '📥' };
+const KIND_ICON = { feature: '✨', bug: '🐛', incident: '🚨', code: '👨‍💻', triage: '📥', design: '🎨' };
 
 function BoardCard({ children, className }) {
   return (
@@ -30,7 +30,8 @@ export default function Board() {
   const g = s.g;
   const players = g.players;
 
-  const active = [...g.tasks].sort((a, b) => a.deadlineAt - b.deadlineAt);
+  // celebrating ghosts are already in doneLog — don't double-list them
+  const active = g.tasks.filter((t) => !t.celebrate).sort((a, b) => a.deadlineAt - b.deadlineAt);
   const finished = [...g.doneLog].reverse();
   const done = finished.filter((t) => t.status === 'done').slice(0, 8);
   const failed = finished.filter((t) => t.status !== 'done').slice(0, 8);

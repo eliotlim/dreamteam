@@ -13,7 +13,19 @@
 // Vocab: noun/nouns are prose, item/arr/field are identifiers.
 // ---------------------------------------------------------------------------
 
-const THEMES = [
+import type { Snippet } from './types.ts';
+
+interface Theme {
+  title: string;
+  file: string;
+  noun: string;
+  nouns: string;
+  item: string;
+  arr: string;
+  field: string;
+}
+
+const THEMES: Theme[] = [
   // features
   { title: 'AI-powered onboarding',            file: 'onboarding.js',     noun: 'onboarding step',   nouns: 'onboarding steps',   item: 'step',         arr: 'steps',         field: 'duration' },
   { title: 'Dark mode for the dark mode',      file: 'theme.js',          noun: 'theme token',       nouns: 'theme tokens',       item: 'token',        arr: 'tokens',        field: 'contrast' },
@@ -59,7 +71,7 @@ const THEMES = [
   { title: 'Realtime vibe dashboard',          file: 'vibe-events.js',    noun: 'vibe event',        nouns: 'vibe events',        item: 'event',        arr: 'events',        field: 'intensity' },
 ];
 
-const cap = (s) => s[0].toUpperCase() + s.slice(1);
+const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
 
 // ---------------------------------------------------------------------------
 // Patterns — classic real-world bug shapes, parameterized by theme vocab.
@@ -67,7 +79,17 @@ const cap = (s) => s[0].toUpperCase() + s.slice(1);
 // corrected line). Two variants per pattern.
 // ---------------------------------------------------------------------------
 
-const PATTERNS = [
+// variant knobs differ per pattern, so they stay loosely typed by design
+type Variant = Record<string, any>;
+type GenOut = Pick<Snippet, 'lines' | 'bug' | 'why' | 'fix'>;
+
+interface Pattern {
+  id: string;
+  vs: Variant[];
+  gen: (t: Theme, v: Variant) => GenOut;
+}
+
+const PATTERNS: Pattern[] = [
   {
     id: 'sum',
     vs: [{ skip: 'last' }, { skip: 'first' }],
@@ -322,11 +344,11 @@ const PATTERNS = [
 
 const PER_THEME = 25;
 
-const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
-function build() {
-  const all = [];
-  const byTitle = {};
+function build(): { all: Snippet[]; byTitle: Record<string, Snippet[]> } {
+  const all: Snippet[] = [];
+  const byTitle: Record<string, Snippet[]> = {};
   const combos = PATTERNS.flatMap((p) => p.vs.map((v, vi) => ({ p, v, vi })));
   THEMES.forEach((t, ti) => {
     const deck = combos.map((_, i) => combos[(i + ti) % combos.length]).slice(0, PER_THEME);

@@ -1,8 +1,13 @@
 // Game content: services, controls, task flavor, incident scenarios, bots.
 
-export const ROLES = ['pm', 'designer', 'engineer', 'ops'];
+import type {
+  ControlDef, ControlType, DesignColor, IncidentDef, IncidentKind,
+  LogTemplate, ModeDef, ModeId, PlayerRole, Role, TriageTicket,
+} from './types.ts';
 
-export const ROLE_META = {
+export const ROLES: Role[] = ['pm', 'designer', 'engineer', 'ops'];
+
+export const ROLE_META: Record<PlayerRole, { label: string; icon: string; color: string }> = {
   pm:        { label: 'Product Manager', icon: '📋', color: '#c084fc' },
   designer:  { label: 'Designer',        icon: '🎨', color: '#f472b6' },
   engineer:  { label: 'Engineer',        icon: '⚙️', color: '#60a5fa' },
@@ -25,7 +30,7 @@ export const GUESS_PENALTY = { secs: 4, points: 10 };
 // the same numbers — update both together.
 export const INCIDENT_TUNING = { firewallShed: 6, dnsTtlMs: 8000, restoreSecs: 10 };
 
-export const MODES = {
+export const MODES: Record<ModeId, ModeDef> = {
   arcade: {
     label: '🕹️ Arcade',
     blurb: 'Incidents tell you exactly which dials to turn, and everything is runnable from the dashboard. Pure party.',
@@ -49,7 +54,15 @@ export const MODES = {
 // `tier` drives the diagram layout (left → right).
 // ---------------------------------------------------------------------------
 
-export const SERVICES = {
+export interface ServiceDef {
+  label: string;
+  icon: string;
+  tier: number;
+  core?: boolean;
+  unlockFeature?: string;
+}
+
+export const SERVICES: Record<string, ServiceDef> = {
   dns:       { label: 'DNS',           icon: '🌐', tier: 0, core: true },
   lb:        { label: 'Load Balancer', icon: '⚖️', tier: 1, core: true },
   frontend:  { label: 'Frontend',      icon: '🖥️', tier: 2, core: true },
@@ -63,7 +76,7 @@ export const SERVICES = {
   analytics: { label: 'Analytics',     icon: '📊', tier: 3, unlockFeature: 'Realtime vibe dashboard' },
 };
 
-export const SERVICE_EDGES = [
+export const SERVICE_EDGES: [string, string][] = [
   ['dns', 'lb'], ['dns', 'cdn'], ['cdn', 'frontend'], ['lb', 'frontend'],
   ['lb', 'backend'], ['backend', 'db'], ['backend', 'cache'],
   ['backend', 'queue'], ['backend', 'payments'], ['backend', 'search'],
@@ -80,7 +93,7 @@ export const CORE_SERVICES = Object.keys(SERVICES).filter((k) => SERVICES[k].cor
 // Backend replicas can never go to zero — min is 1.
 // ---------------------------------------------------------------------------
 
-export const CRITICAL_CONTROLS = [
+export const CRITICAL_CONTROLS: ControlDef[] = [
   { key: 'autoscaler',      label: 'Autoscaler',               type: 'toggle', role: 'engineer' },
   { key: 'circuit_breaker', label: 'Payments Circuit Breaker', type: 'toggle', role: 'engineer' },
   { key: 'dns_primary',     label: 'DNS Primary Record',       type: 'select', role: 'engineer', options: REGIONS },
@@ -95,7 +108,7 @@ export const CRITICAL_CONTROLS = [
 // the node inspector (trigger actions from inside the diagram) and, in
 // assisted/realism mode, moves these controls off the flat console and onto
 // the map. Controls not listed here are pure mission dials.
-export const CONTROL_SERVICE = {
+export const CONTROL_SERVICE: Record<string, string> = {
   dns_primary: 'dns',
   firewall: 'lb',
   autoscaler: 'backend',
@@ -110,11 +123,11 @@ export const CONTROL_SERVICE = {
   circuit_breaker: 'payments',
 };
 
-export const SERVICE_CONTROLS = Object.entries(CONTROL_SERVICE).reduce(
+export const SERVICE_CONTROLS = Object.entries(CONTROL_SERVICE).reduce<Record<string, string[]>>(
   (acc, [key, svc]) => (((acc[svc] ??= []).push(key)), acc), {},
 );
 
-export const CONTROL_POOL = [
+export const CONTROL_POOL: ControlDef[] = [
   // PM
   { key: 'scope_creep',     label: 'Scope Creep Valve',      type: 'slider', role: 'pm', min: 0, max: 8 },
   { key: 'stakeholders',    label: 'Stakeholder Alignment',  type: 'toggle', role: 'pm' },
@@ -156,8 +169,8 @@ export const CONTROL_POOL = [
 // ---------------------------------------------------------------------------
 
 export const EPIC_FEATURES = Object.entries(SERVICES)
-  .filter(([, s]) => s.unlockFeature)
-  .map(([id, s]) => ({ title: s.unlockFeature, service: id }));
+  .filter(([, s]) => !!s.unlockFeature)
+  .map(([id, s]) => ({ title: s.unlockFeature!, service: id }));
 
 export const FEATURES = [
   'AI-powered onboarding', 'Dark mode for the dark mode', 'Collaborative cursors',
@@ -179,11 +192,14 @@ export const BUGS = [
   'Profile page renders in Comic Sans', 'Export to PDF exports a JPEG',
 ];
 
-export function instructionFor(control, target) {
+export function instructionFor(
+  control: { type: ControlType; label: string; options?: string[] },
+  target: number,
+): string {
   switch (control.type) {
     case 'toggle': return `Set ${control.label} to ${target === 1 ? 'ON' : 'OFF'}`;
     case 'slider': return `Set ${control.label} to ${target}`;
-    case 'select': return `Switch ${control.label} to "${control.options[target]}"`;
+    case 'select': return `Switch ${control.label} to "${control.options![target]}"`;
     case 'button': return `Press ${control.label}`;
     default: return control.label;
   }
@@ -201,7 +217,7 @@ export function instructionFor(control, target) {
 
 export const TRIAGE_OPTIONS = ['P0 · page on-call', 'P1 · this sprint', 'P2 · backlog', 'Close · not a bug'];
 
-export const TRIAGE_TICKETS = [
+export const TRIAGE_TICKETS: TriageTicket[] = [
   { kind: 'bug', from: 'support', text: 'Checkout returns 500 for every user since the last deploy.', answer: 0, why: 'Full outage on the revenue path — that is a page.' },
   { kind: 'bug', from: 'support', text: 'Login button misaligned by 2px in Safari 16.', answer: 2, why: 'Cosmetic, one browser — backlog it.' },
   { kind: 'bug', from: 'support', text: "I can see another company's invoices in my dashboard.", answer: 0, why: 'Cross-tenant data leak is a security incident — page immediately.' },
@@ -229,7 +245,7 @@ export const TRIAGE_TICKETS = [
 // from these bases; designers get an instinct marker on the right one.
 // ---------------------------------------------------------------------------
 
-export const DESIGN_COLORS = [
+export const DESIGN_COLORS: DesignColor[] = [
   { name: 'brand indigo', h: 243, s: 75, l: 59 },
   { name: 'coral',        h: 9,   s: 85, l: 62 },
   { name: 'teal',         h: 172, s: 66, l: 40 },
@@ -250,7 +266,7 @@ export const DESIGN_RADII = [2, 6, 10, 16, 24];
 // realism mode instead of the diagnosis.
 // ---------------------------------------------------------------------------
 
-export const INCIDENTS = {
+export const INCIDENTS: Record<IncidentKind, IncidentDef> = {
   outage: {
     shortLabel: 'Crash-loop outages',
     title: 'Backend pods crash-looping',
@@ -388,7 +404,7 @@ export const INCIDENTS = {
   },
 };
 
-export const INCIDENT_LABELS = Object.fromEntries(
+export const INCIDENT_LABELS: Record<string, string> = Object.fromEntries(
   Object.entries(INCIDENTS).map(([k, def]) => [k, def.shortLabel]),
 );
 
@@ -396,7 +412,7 @@ export const INCIDENT_LABELS = Object.fromEntries(
 // Ambient logs / traces
 // ---------------------------------------------------------------------------
 
-export const AMBIENT_LOGS = [
+export const AMBIENT_LOGS: LogTemplate[] = [
   ['info', 'backend', 'GET /api/products 200 {n}ms'],
   ['info', 'backend', 'POST /api/cart 201 {n}ms'],
   ['info', 'frontend', 'hydration complete in {n}ms'],
@@ -406,7 +422,7 @@ export const AMBIENT_LOGS = [
   ['info', 'dns', 'zone transfer complete ({n} records)'],
 ];
 
-export const SERVICE_LOGS = {
+export const SERVICE_LOGS: Record<string, LogTemplate[]> = {
   cdn: [['info', 'cdn', 'cache HIT /assets/app.js']],
   cache: [['info', 'cache', 'GET user:{n} hit (0.4ms)']],
   queue: [['info', 'queue', 'processed batch of {n} jobs']],
@@ -415,7 +431,7 @@ export const SERVICE_LOGS = {
   analytics: [['info', 'analytics', 'flushed {n} events to warehouse']],
 };
 
-export const TRACE_ROUTES = [
+export const TRACE_ROUTES: { name: string; spans: string[] }[] = [
   { name: 'GET /checkout', spans: ['dns', 'lb', 'frontend', 'backend', 'payments', 'db'] },
   { name: 'GET /dashboard', spans: ['dns', 'lb', 'frontend', 'backend', 'db'] },
   { name: 'POST /api/cart', spans: ['lb', 'backend', 'cache', 'db'] },
@@ -427,7 +443,7 @@ export const TRACE_ROUTES = [
 // Chat bots
 // ---------------------------------------------------------------------------
 
-export const BOTS = {
+export const BOTS: Record<string, { name: string; icon: string }> = {
   ceo:     { name: 'ceo-dave',         icon: '💼' },
   support: { name: 'customer-support', icon: '🎧' },
   pager:   { name: 'pagerbot',         icon: '🚨' },

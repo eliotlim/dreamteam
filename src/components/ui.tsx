@@ -1,20 +1,24 @@
 import { useEffect, useState } from 'react';
+import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 
 // DreamTeam design system — minimalist primitives on semantic tokens.
 // Tones: neutral | accent | ok | warn | danger | info
 
-export const cx = (...xs) => xs.filter(Boolean).join(' ');
+export type Tone = 'neutral' | 'accent' | 'ok' | 'warn' | 'danger' | 'info';
 
-const TONE_TEXT = {
+export const cx = (...xs: Array<string | number | false | null | undefined>) =>
+  xs.filter(Boolean).join(' ');
+
+const TONE_TEXT: Record<Tone, string> = {
   neutral: 'text-subtle', accent: 'text-accent', ok: 'text-ok',
   warn: 'text-warn', danger: 'text-danger', info: 'text-info',
 };
-const TONE_SOFT = {
+const TONE_SOFT: Record<Tone, string> = {
   neutral: 'bg-raised text-subtle', accent: 'bg-accent-soft text-accent',
   ok: 'bg-ok-soft text-ok', warn: 'bg-warn-soft text-warn',
   danger: 'bg-danger-soft text-danger', info: 'bg-info-soft text-info',
 };
-const TONE_SOLID = {
+const TONE_SOLID: Record<Tone, string> = {
   neutral: 'bg-ink', accent: 'bg-accent', ok: 'bg-ok',
   warn: 'bg-warn', danger: 'bg-danger', info: 'bg-info',
 };
@@ -36,7 +40,12 @@ const BTN_SIZES = {
   lg: 'h-12 px-6 text-base rounded-xl',
 };
 
-export function Button({ variant = 'primary', size = 'md', className, ...props }) {
+export interface ButtonProps extends ComponentPropsWithoutRef<'button'> {
+  variant?: keyof typeof BTN_VARIANTS;
+  size?: keyof typeof BTN_SIZES;
+}
+
+export function Button({ variant = 'primary', size = 'md', className, ...props }: ButtonProps) {
   return (
     <button
       className={cx(
@@ -51,12 +60,12 @@ export function Button({ variant = 'primary', size = 'md', className, ...props }
 
 // ---------------------------------------------------------------- surfaces
 
-export function Card({ className, ...props }) {
+export function Card({ className, ...props }: ComponentPropsWithoutRef<'div'>) {
   return <div className={cx('bg-surface border border-line rounded-2xl', className)} {...props} />;
 }
 
 // Fixed-footprint placeholder — reserves space so panels never shift layout.
-export function Skeleton({ className, label }) {
+export function Skeleton({ className, label }: { className?: string; label?: ReactNode }) {
   return (
     <div className={cx(
       'rounded-2xl border border-dashed border-line bg-surface/40',
@@ -68,7 +77,7 @@ export function Skeleton({ className, label }) {
   );
 }
 
-export function SectionLabel({ className, children }) {
+export function SectionLabel({ className, children }: { className?: string; children?: ReactNode }) {
   return (
     <div className={cx('text-[11px] font-semibold uppercase tracking-widest text-faint', className)}>
       {children}
@@ -78,7 +87,7 @@ export function SectionLabel({ className, children }) {
 
 // ---------------------------------------------------------------- badges & stats
 
-export function Badge({ tone = 'neutral', className, children }) {
+export function Badge({ tone = 'neutral', className, children }: { tone?: Tone; className?: string; children?: ReactNode }) {
   return (
     <span className={cx(
       'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold',
@@ -90,7 +99,7 @@ export function Badge({ tone = 'neutral', className, children }) {
 }
 
 // Small danger-count pill used on tabs and nav icons. Renders nothing at 0.
-export function CountPill({ count, className }) {
+export function CountPill({ count, className }: { count?: number; className?: string }) {
   if (!count) return null;
   return (
     <span className={cx(
@@ -103,7 +112,7 @@ export function CountPill({ count, className }) {
   );
 }
 
-export function Dot({ tone = 'neutral', pulse, className }) {
+export function Dot({ tone = 'neutral', pulse, className }: { tone?: Tone; pulse?: boolean; className?: string }) {
   return (
     <span className={cx(
       'inline-block size-2 rounded-full', TONE_SOLID[tone],
@@ -112,7 +121,9 @@ export function Dot({ tone = 'neutral', pulse, className }) {
   );
 }
 
-export function Stat({ label, value, tone = 'neutral', className }) {
+export function Stat({ label, value, tone = 'neutral', className }: {
+  label: ReactNode; value: ReactNode; tone?: Tone; className?: string;
+}) {
   return (
     <div className={cx('flex flex-col gap-0.5', className)}>
       <span className="text-[11px] font-medium uppercase tracking-wider text-faint">{label}</span>
@@ -125,7 +136,9 @@ export function Stat({ label, value, tone = 'neutral', className }) {
 
 // ---------------------------------------------------------------- progress
 
-export function Progress({ value, tone = 'accent', className, animate = true }) {
+export function Progress({ value, tone = 'accent', className, animate = true }: {
+  value: number; tone?: Tone; className?: string; animate?: boolean;
+}) {
   return (
     <div className={cx('h-1.5 rounded-full bg-line overflow-hidden', className)}>
       <div
@@ -138,7 +151,7 @@ export function Progress({ value, tone = 'accent', className, animate = true }) 
 
 // ---------------------------------------------------------------- inputs
 
-export function Input({ className, ...props }) {
+export function Input({ className, ...props }: ComponentPropsWithoutRef<'input'>) {
   return (
     <input
       className={cx(
@@ -151,7 +164,9 @@ export function Input({ className, ...props }) {
   );
 }
 
-export function Switch({ checked, onChange, disabled }) {
+export function Switch({ checked, onChange, disabled }: {
+  checked: boolean; onChange: (on: boolean) => void; disabled?: boolean;
+}) {
   return (
     <button
       role="switch"
@@ -172,11 +187,16 @@ export function Switch({ checked, onChange, disabled }) {
   );
 }
 
-export function Seg({ options, value, onChange, size = 'md', className }) {
+export interface SegOption<T> { value: T; label: ReactNode }
+
+export function Seg<T extends string | number>({ options, value, onChange, size = 'md', className }: {
+  options: SegOption<T>[]; value: T; onChange: (v: T) => void;
+  size?: 'sm' | 'md'; className?: string;
+}) {
   return (
     <div className={cx('inline-flex p-0.5 rounded-xl bg-raised border border-line gap-0.5', className)}>
-      {options.map((opt, i) => {
-        const val = opt.value ?? i;
+      {options.map((opt) => {
+        const val = opt.value;
         const active = value === val;
         return (
           <button
@@ -188,7 +208,7 @@ export function Seg({ options, value, onChange, size = 'md', className }) {
               active ? 'bg-surface text-ink shadow-sm border border-line' : 'text-subtle hover:text-ink',
             )}
           >
-            {opt.label ?? opt}
+            {opt.label}
           </button>
         );
       })}
@@ -198,7 +218,10 @@ export function Seg({ options, value, onChange, size = 'md', className }) {
 
 // ---------------------------------------------------------------- tabs
 
-export function Tabs({ tabs, active, onChange, className }) {
+export function Tabs({ tabs, active, onChange, className }: {
+  tabs: { id: string; label: ReactNode; count?: number }[];
+  active: string; onChange: (id: string) => void; className?: string;
+}) {
   return (
     <div className={cx('flex gap-1 border-b border-line', className)}>
       {tabs.map((tab) => (
@@ -224,12 +247,14 @@ export function Tabs({ tabs, active, onChange, className }) {
 
 // ---------------------------------------------------------------- avatar
 
-const ROLE_COLORS = {
+const ROLE_COLORS: Record<string, string> = {
   pm: 'bg-purple-500', designer: 'bg-pink-500', engineer: 'bg-blue-500',
   ops: 'bg-emerald-500', spectator: 'bg-zinc-500',
 };
 
-export function Avatar({ name, role, size = 'md', className }) {
+export function Avatar({ name, role, size = 'md', className }: {
+  name?: string; role?: string; size?: 'sm' | 'md' | 'lg'; className?: string;
+}) {
   const initials = (name || '?').split(/[_\s]/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
   return (
     <span
@@ -237,7 +262,7 @@ export function Avatar({ name, role, size = 'md', className }) {
       className={cx(
         'inline-flex items-center justify-center rounded-full text-white font-bold shrink-0',
         size === 'sm' ? 'size-6 text-[10px]' : size === 'lg' ? 'size-10 text-sm' : 'size-8 text-xs',
-        ROLE_COLORS[role] || 'bg-zinc-500', className,
+        (role && ROLE_COLORS[role]) || 'bg-zinc-500', className,
       )}
     >
       {initials}
@@ -247,7 +272,7 @@ export function Avatar({ name, role, size = 'md', className }) {
 
 // ---------------------------------------------------------------- theme toggle
 
-export function ThemeToggle({ className }) {
+export function ThemeToggle({ className }: { className?: string }) {
   const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'));
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
@@ -263,7 +288,7 @@ export function ThemeToggle({ className }) {
 
 // ---------------------------------------------------------------- overlay
 
-export function Overlay({ children }) {
+export function Overlay({ children }: { children?: ReactNode }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
       <div className="animate-pop w-full max-w-lg">{children}</div>

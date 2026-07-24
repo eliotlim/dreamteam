@@ -1,24 +1,28 @@
 import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
-import { ROLE_META, INCIDENTS, INCIDENT_LABELS, SERVICES, MODES, CONTROL_POOL } from '../../shared/content.js';
+import { ROLE_META, INCIDENTS, INCIDENT_LABELS, SERVICES, MODES, CONTROL_POOL } from '../../shared/content.ts';
+import type { IncidentKind, ModeId, PlayerRole } from '../../shared/types.ts';
 import {
   Button, Card, Badge, Avatar, Switch, Seg, ThemeToggle, SectionLabel, Dot, Input, cx,
-} from '../components/ui.jsx';
+} from '../components/ui.tsx';
 import {
   setRole, setConfig, startGame, renameSelf, setRoomName, setPassword, makeHost,
-} from '../lib/net.js';
-import { useStore } from '../lib/store.js';
+} from '../lib/net.ts';
+import { useStore } from '../lib/store.ts';
 
-const ROLE_CHOICES = ['pm', 'designer', 'engineer', 'ops', 'spectator'];
+const ROLE_CHOICES: PlayerRole[] = ['pm', 'designer', 'engineer', 'ops', 'spectator'];
 
-const PRESET_BLURB = {
+const PRESET_BLURB: Record<string, string> = {
   chill: 'Slow pace, forgiving deadlines, 5 starting services.',
   standard: 'The intended experience. 7 starting services.',
   chaos: 'Fast, punishing, 8 starting services. Bring earplugs.',
   custom: 'Custom settings — you know what you did.',
 };
 
-function NumberSetting({ label, value, onChange, min, max, step = 1, suffix }) {
+function NumberSetting({ label, value, onChange, min, max, step = 1, suffix }: {
+  label: string; value: number; onChange: (v: number) => void;
+  min: number; max: number; step?: number; suffix?: string;
+}) {
   return (
     <label className="flex items-center justify-between gap-3 py-1.5">
       <span className="text-sm text-subtle">{label}</span>
@@ -36,7 +40,9 @@ function NumberSetting({ label, value, onChange, min, max, step = 1, suffix }) {
   );
 }
 
-function ToggleSetting({ label, desc, checked, onChange }) {
+function ToggleSetting({ label, desc, checked, onChange }: {
+  label: string; desc?: string; checked: boolean; onChange: (on: boolean) => void;
+}) {
   return (
     <label className="flex items-center justify-between gap-3 py-2">
       <span>
@@ -50,7 +56,7 @@ function ToggleSetting({ label, desc, checked, onChange }) {
 
 // Inline rename for your own row — commits on Enter/blur, syncs localStorage
 // so the next session greets you by the new name.
-function RenameField({ current, onDone }) {
+function RenameField({ current, onDone }: { current: string; onDone: () => void }) {
   const [val, setVal] = useState(current);
   const commit = () => {
     const n = val.trim();
@@ -74,7 +80,7 @@ function RenameField({ current, onDone }) {
 }
 
 // Host-only password manager: set, update, or remove the lobby password.
-function PasswordRow({ hasPassword, isHost }) {
+function PasswordRow({ hasPassword, isHost }: { hasPassword: boolean; isHost: boolean }) {
   const [pw, setPw] = useState('');
   if (!isHost) {
     return hasPassword
@@ -105,15 +111,15 @@ function PasswordRow({ hasPassword, isHost }) {
 
 export default function Lobby() {
   const s = useStore();
-  const g = s.g;
-  const me = g.players[s.you];
+  const g = s.g!;
+  const me = s.you ? g.players[s.you] : undefined;
   const isHost = !!me?.isHost;
   const cfg = g.config;
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [copied, setCopied] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [roomName, setRoomNameLocal] = useState(g.name || '');
-  const [qr, setQr] = useState(null);
+  const [qr, setQr] = useState<string | null>(null);
 
   useEffect(() => { setRoomNameLocal(g.name || ''); }, [g.name]);
 
@@ -161,7 +167,7 @@ export default function Lobby() {
                     <Input
                       value={roomName}
                       onChange={(e) => setRoomNameLocal(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && e.target.blur()}
+                      onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
                       onBlur={commitRoomName}
                       placeholder="Name your startup…"
                       maxLength={32}
@@ -290,7 +296,7 @@ export default function Lobby() {
             <div className="border-t border-line pt-3 pb-1 space-y-1">
               <SectionLabel>Mode</SectionLabel>
               <Seg
-                options={Object.entries(MODES).map(([value, m]) => ({ value, label: m.label }))}
+                options={Object.entries(MODES).map(([value, m]) => ({ value: value as ModeId, label: m.label }))}
                 value={cfg.mode}
                 onChange={(mode) => setConfig({ mode })}
                 className="w-full justify-center"
@@ -364,7 +370,7 @@ export default function Lobby() {
 
                 <div className="space-y-1">
                   <SectionLabel>Incident types</SectionLabel>
-                  {Object.keys(INCIDENTS).map((k) => (
+                  {(Object.keys(INCIDENTS) as IncidentKind[]).map((k) => (
                     <label key={k} className="flex items-center justify-between py-1">
                       <span className="text-sm text-subtle">
                         {INCIDENT_LABELS[k] || k}

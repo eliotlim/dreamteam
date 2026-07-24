@@ -1,19 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { Card, Badge, Progress, ThemeToggle, Avatar, Button, Overlay, Stat, CountPill, cx } from '../components/ui.jsx';
-import { useNow, fmtClock } from '../lib/hooks.js';
-import { useStore } from '../lib/store.js';
-import { nextSprint } from '../lib/net.js';
-import Missions, { IncidentCard } from '../panels/Missions.jsx';
-import Controls from '../panels/Controls.jsx';
-import Board from '../panels/Board.jsx';
-import Chat from '../panels/Chat.jsx';
-import Obs, { MetricsGrid } from '../panels/Obs.jsx';
-import Infra from '../panels/Infra.jsx';
+import type { SprintStats } from '../../shared/types.ts';
+import { Card, Badge, Progress, ThemeToggle, Avatar, Button, Overlay, Stat, CountPill, cx } from '../components/ui.tsx';
+import { useNow, fmtClock } from '../lib/hooks.ts';
+import { useStore } from '../lib/store.ts';
+import { nextSprint } from '../lib/net.ts';
+import Missions, { IncidentCard } from '../panels/Missions.tsx';
+import Controls from '../panels/Controls.tsx';
+import Board from '../panels/Board.tsx';
+import Chat from '../panels/Chat.tsx';
+import Obs, { MetricsGrid } from '../panels/Obs.tsx';
+import Infra from '../panels/Infra.tsx';
 
 // When the tab is backgrounded, surface pending work in the title bar so
 // cross-play players flipping between apps see they're needed.
-function useAttentionTitle(count) {
+function useAttentionTitle(count: number) {
   useEffect(() => {
     const update = () => {
       document.title = document.hidden && count > 0 ? `(${count}) 🚨 DreamTeam` : 'DreamTeam';
@@ -31,14 +32,14 @@ function useIsDesktop() {
   const [is, setIs] = useState(() => matchMedia('(min-width: 1024px)').matches);
   useEffect(() => {
     const mq = matchMedia('(min-width: 1024px)');
-    const fn = (e) => setIs(e.matches);
+    const fn = (e: MediaQueryListEvent) => setIs(e.matches);
     mq.addEventListener('change', fn);
     return () => mq.removeEventListener('change', fn);
   }, []);
   return is;
 }
 
-function HealthBar({ health }) {
+function HealthBar({ health }: { health: number }) {
   const tone = health > 60 ? 'ok' : health > 30 ? 'warn' : 'danger';
   return (
     <div className="flex items-center gap-2 w-20 sm:w-32 shrink-0">
@@ -52,7 +53,7 @@ function HealthBar({ health }) {
 function Header() {
   const s = useStore();
   const now = useNow(250);
-  const g = s.g;
+  const g = s.g!;
   const left = g.sprintEndsAt - now;
   const urgent = g.phase === 'playing' && left < 15000;
 
@@ -80,7 +81,7 @@ function Header() {
 
 function TeamStrip() {
   const s = useStore();
-  const g = s.g;
+  const g = s.g!;
   const players = Object.values(g.players).filter((p) => p.role !== 'spectator');
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-1 shrink-0">
@@ -101,9 +102,9 @@ function TeamStrip() {
 function ReviewOverlay() {
   const s = useStore();
   const now = useNow(500);
-  const g = s.g;
-  const me = g.players[s.you];
-  const st = g.sprintStats || {};
+  const g = s.g!;
+  const me = s.you ? g.players[s.you] : undefined;
+  const st: Partial<SprintStats> = g.sprintStats || {};
   const left = Math.max(0, Math.ceil((g.reviewEndsAt - now) / 1000));
 
   return (
@@ -164,7 +165,9 @@ const APP_VIEWS = [
   { id: 'chat', label: 'Chat', icon: '💬' },
 ];
 
-function NavRail({ view, setView, badges }) {
+function NavRail({ view, setView, badges }: {
+  view: string; setView: (v: string) => void; badges: Record<string, number>;
+}) {
   return (
     <nav className="w-[72px] shrink-0 border-r border-line bg-surface/60 flex flex-col items-center gap-1 py-3">
       {APP_VIEWS.map((v) => (
@@ -190,7 +193,7 @@ function NavRail({ view, setView, badges }) {
 function PlayerDesktop() {
   const s = useStore();
   const [view, setView] = useState('console');
-  const g = s.g;
+  const g = s.g!;
   const arcade = g.config.mode === 'arcade';
   const myTasks = g.tasks.filter((t) => t.displayPid === s.you).length;
   const badNodes = Object.values(g.nodes || {}).filter((n) => n.s !== 'ok').length;
@@ -199,7 +202,7 @@ function PlayerDesktop() {
   useEffect(() => {
     if (view === 'chat') chatSeenTs.current = lastChatTs;
   }, [view, lastChatTs]);
-  const badges = {
+  const badges: Record<string, number> = {
     console: myTasks + (g.incident ? 1 : 0),
     infra: badNodes,
     chat: view === 'chat' ? 0 : g.chat.filter((m) => m.ts > chatSeenTs.current).length,
@@ -249,11 +252,11 @@ const MOBILE_TABS = [
 function PlayerMobile() {
   const s = useStore();
   const [tab, setTab] = useState('console');
-  const g = s.g;
+  const g = s.g!;
   const arcade = g.config.mode === 'arcade';
   const myTasks = g.tasks.filter((t) => t.displayPid === s.you).length;
   const badNodes = Object.values(g.nodes || {}).filter((n) => n.s !== 'ok').length;
-  const badge = { console: myTasks + (g.incident ? 1 : 0), infra: badNodes };
+  const badge: Record<string, number> = { console: myTasks + (g.incident ? 1 : 0), infra: badNodes };
 
   return (
     <>
@@ -287,12 +290,13 @@ function PlayerMobile() {
 
 function SpectatorDesktop() {
   const s = useStore();
+  const g = s.g!;
   const now = useNow(250);
   return (
     <div className="flex-1 min-h-0 flex flex-col gap-2 p-3">
       <div className="flex items-center justify-between gap-4">
         <TeamStrip />
-        <div className="w-96 shrink-0"><IncidentCard incident={s.g.incident} now={now} compact /></div>
+        <div className="w-96 shrink-0"><IncidentCard incident={g.incident} now={now} compact /></div>
       </div>
       <PanelGroup direction="horizontal" autoSaveId="dt-spectator" className="flex-1 min-h-0">
         <Panel defaultSize={55} minSize={35} className="min-w-0">
@@ -325,11 +329,12 @@ function SpectatorDesktop() {
 
 function SpectatorMobile() {
   const s = useStore();
+  const g = s.g!;
   const now = useNow(250);
   return (
     <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
       <TeamStrip />
-      <IncidentCard incident={s.g.incident} now={now} compact />
+      <IncidentCard incident={g.incident} now={now} compact />
       <Infra />
       <MetricsGrid compact />
       <Card className="p-3"><Board /></Card>
@@ -340,10 +345,11 @@ function SpectatorMobile() {
 
 export default function Game() {
   const s = useStore();
+  const g = s.g!;
   const desktop = useIsDesktop();
-  const me = s.g.players[s.you];
+  const me = s.you ? g.players[s.you] : undefined;
   const spectator = !me || me.role === 'spectator';
-  const myWork = s.g.tasks.filter((t) => t.displayPid === s.you).length + (s.g.incident ? 1 : 0);
+  const myWork = g.tasks.filter((t) => t.displayPid === s.you).length + (g.incident ? 1 : 0);
   useAttentionTitle(spectator ? 0 : myWork);
 
   return (
@@ -352,7 +358,7 @@ export default function Game() {
       {spectator
         ? (desktop ? <SpectatorDesktop /> : <SpectatorMobile />)
         : (desktop ? <PlayerDesktop /> : <PlayerMobile />)}
-      {s.g.phase === 'review' && <ReviewOverlay />}
+      {g.phase === 'review' && <ReviewOverlay />}
     </div>
   );
 }

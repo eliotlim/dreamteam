@@ -5,8 +5,15 @@ import {
   SERVICES, CORE_SERVICES, EPIC_FEATURES, REGIONS, AMBIENT_LOGS, SERVICE_LOGS,
   TRACE_ROUTES, BOTS, CEO_SPRINT_LINES, CEO_INCIDENT_LINES, instructionFor,
   NAME_ADJECTIVES, NAME_NOUNS, CONTROL_SERVICE, DESIGN_COLORS, DESIGN_RADII,
-} from '../shared/content.js';
-import { CODE_SNIPPETS, SNIPPETS_BY_TITLE } from '../shared/snippets.js';
+} from '../shared/content.ts';
+import { CODE_SNIPPETS, SNIPPETS_BY_TITLE } from '../shared/snippets.ts';
+import type {
+  AnalysisItem, BacklogItem, ClientGame, ClientMsg, CodeTask, ControlDef,
+  ControlInstance, DesignTask, DialTask, GameConfig, GameEvent, GameState,
+  GameStats, Incident, IncidentKind, LogLine, LogTemplate, NodeStat,
+  NumericConfigKey, Player, PlayerRole, PresetId, ServerMsg, Sim, Task,
+  TaskStatus, Trace, TriageTask,
+} from '../shared/types.ts';
 
 const TICK_MS = 1000;
 const REVIEW_SECONDS = 15;
@@ -20,7 +27,7 @@ const CRITICAL_INIT = {
   autoscaler: 0, circuit_breaker: 0, queue_drain: 4, replicas: 3, cache_ttl: 3,
 };
 
-export const DEFAULT_CONFIG = {
+export const DEFAULT_CONFIG: GameConfig = {
   preset: 'standard',
   mode: 'arcade',         // arcade | assisted | realism — how much the game tells you
   megaMode: false,        // crowd play: dials duplicated, missions need a quorum
@@ -44,11 +51,11 @@ export const DEFAULT_CONFIG = {
   healOnComplete: 2,
   difficultyRamp: 0.25,
   spikeMult: 4,
-  incidents: Object.fromEntries(Object.keys(INCIDENTS).map((k) => [k, true])),
+  incidents: Object.fromEntries(Object.keys(INCIDENTS).map((k) => [k, true])) as Record<IncidentKind, boolean>,
 };
 
 // Presets tune pacing AND how much infrastructure you start with.
-export const PRESETS = {
+export const PRESETS: Record<PresetId, Partial<GameConfig> & { startingServices: string[] }> = {
   chill: {
     taskEverySec: 12, taskDeadlineSec: 45, incidentEverySec: 75,
     incidentDeadlineSec: 90, missPenalty: 5, incidentDrainPerSec: 0.25,
@@ -64,11 +71,14 @@ export const PRESETS = {
   },
 };
 
-const rnd = (n) => Math.floor(Math.random() * n);
-const pick = (arr) => arr[rnd(arr.length)];
-const shuffle = (arr) => { const a = [...arr]; for (let i = a.length - 1; i > 0; i--) { const j = rnd(i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; };
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const rnd = (n: number) => Math.floor(Math.random() * n);
+const pick = <T,>(arr: readonly T[]): T => arr[rnd(arr.length)];
+const shuffle = <T,>(arr: readonly T[]): T[] => { const a = [...arr]; for (let i = a.length - 1; i > 0; i--) { const j = rnd(i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 const uid = () => crypto.randomUUID().slice(0, 8);
+
+// dial missions (feature/bug) are the only tasks bound to a control
+const isDialTask = (t: Task): t is DialTask => t.kind === 'feature' || t.kind === 'bug';
 
 // Incident-transient sim fields — reset together when a sprint starts or an
 // incident ends. trafficMult and cacheWarmth are excluded: they decay/rebuild
@@ -78,7 +88,7 @@ const INCIDENT_SIM_RESET = {
   leak: 0, leakFixed: false, badDeploy: false, dbCorrupt: false, restoring: 0,
 };
 
-function freshSim() {
+function freshSim(): Sim {
   return {
     rps: 90, util: 0.7, err: 0.5, p95: 160, queueDepth: 12, dbIops: 150,
     trafficMult: 1, cacheWarmth: 1, stableTicks: 0,
@@ -86,14 +96,14 @@ function freshSim() {
   };
 }
 
-function freshStats() {
+function freshStats(): GameStats {
   return {
     shipped: 0, bugsFixed: 0, incidentsResolved: 0, triaged: 0, missed: 0,
     bugsShipped: 0, wrongGuesses: 0, sprints: [],
   };
 }
 
-function freshState(code) {
+function freshState(code: string): GameState {
   return {
     code,
     createdAt: Date.now(),
@@ -137,41 +147,42 @@ function freshState(code) {
   };
 }
 
-export class GameRoom extends DurableObject {
-  constructor(ctx, env) {
+export class GameRoom extends DurableObject<Env> {
+  g: GameState | null = null;
+
+  constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.ctx = ctx;
     ctx.blockConcurrencyWhile(async () => {
       ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)`);
       const row = [...ctx.storage.sql.exec(`SELECT v FROM kv WHERE k = 'game'`)][0];
-      this.g = row ? JSON.parse(row.v) : null;
+      this.g = row ? JSON.parse(row.v as string) : null;
       // rooms persisted by a pre-simulation build can't run under this code
-      if (this.g && (!Array.isArray(this.g.services) || !this.g.sim)) {
-        this.g = freshState(this.g.code || '????');
+      if (this.g && (!Array.isArray(this.g!.services) || !this.g!.sim)) {
+        this.g = freshState(this.g!.code || '????');
       }
       // migrate rooms persisted before game modes / mega mode existed
       if (this.g?.config) {
-        if (!this.g.config.mode) {
-          this.g.config.mode = 'arcade';
-          this.g.config.codeChance ??= MODES.arcade.codeChance;
-          this.g.config.triageChance ??= MODES.arcade.triageChance;
+        if (!this.g!.config.mode) {
+          this.g!.config.mode = 'arcade';
+          this.g!.config.codeChance ??= MODES.arcade.codeChance;
+          this.g!.config.triageChance ??= MODES.arcade.triageChance;
         }
-        this.g.config.designChance ??= MODES[this.g.config.mode]?.designChance ?? MODES.arcade.designChance;
-        this.g.lastActiveAt ??= Date.now();
-        this.g.config.megaMode ??= false;
-        this.g.config.hintsEnabled ??= true;
-        this.g.usedSnippets ??= [];
-        this.g.usedTickets ??= [];
-        this.g.stats ??= freshStats();
-        this.g.stats.triaged ??= 0;
-        this.g.stats.bugsShipped ??= 0;
-        this.g.stats.wrongGuesses ??= 0;
-        this.g.name ??= '';
-        this.g.password ??= null;
-        this.g.creatorPid ??= null;
-        this.g.events ??= [];
-        this.g.openEv ??= { sprint: null, incident: null, crash: null, badDeploy: null };
-        this.g.analysis ??= null;
+        this.g!.config.designChance ??= MODES[this.g!.config.mode]?.designChance ?? MODES.arcade.designChance;
+        this.g!.lastActiveAt ??= Date.now();
+        this.g!.config.megaMode ??= false;
+        this.g!.config.hintsEnabled ??= true;
+        this.g!.usedSnippets ??= [];
+        this.g!.usedTickets ??= [];
+        this.g!.stats ??= freshStats();
+        this.g!.stats.triaged ??= 0;
+        this.g!.stats.bugsShipped ??= 0;
+        this.g!.stats.wrongGuesses ??= 0;
+        this.g!.name ??= '';
+        this.g!.password ??= null;
+        this.g!.creatorPid ??= null;
+        this.g!.events ??= [];
+        this.g!.openEv ??= { sprint: null, incident: null, crash: null, badDeploy: null };
+        this.g!.analysis ??= null;
       }
       // every live room keeps an alarm pending — ticks while playing, the
       // idle sweep otherwise — so rooms persisted before TTLs existed need one
@@ -184,7 +195,7 @@ export class GameRoom extends DurableObject {
   // any human interaction marks the room active; the idle sweep in alarm()
   // reclaims rooms untouched for ROOM_TTL_MS
   touch() {
-    if (this.g) this.g.lastActiveAt = Date.now();
+    if (this.g) this.g!.lastActiveAt = Date.now();
   }
 
   persist() {
@@ -197,7 +208,7 @@ export class GameRoom extends DurableObject {
 
   // ------------------------------------------------------------- HTTP entry
 
-  async fetch(request) {
+  async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname.endsWith('/init') && request.method === 'POST') {
@@ -206,7 +217,7 @@ export class GameRoom extends DurableObject {
         this.persist();
         this.ctx.storage.setAlarm(Date.now() + ROOM_TTL_MS);
       }
-      return Response.json({ ok: true, code: this.g.code });
+      return Response.json({ ok: true, code: this.g!.code });
     }
 
     if (url.pathname.endsWith('/exists')) {
@@ -215,7 +226,7 @@ export class GameRoom extends DurableObject {
         exists: !!this.g,
         phase: this.g?.phase ?? null,
         hasPassword,
-        passOk: !hasPassword || url.searchParams.get('pass') === this.g.password,
+        passOk: !hasPassword || url.searchParams.get('pass') === this.g?.password,
       });
     }
 
@@ -229,8 +240,8 @@ export class GameRoom extends DurableObject {
       const pid = url.searchParams.get('pid') || uid();
       // password-protected room: known players (rejoin/refresh) pass freely,
       // new faces need the password
-      if (this.g.password && !this.g.players[pid]
-        && url.searchParams.get('pass') !== this.g.password) {
+      if (this.g!.password && !this.g!.players[pid]
+        && url.searchParams.get('pass') !== this.g!.password) {
         return new Response('wrong password', { status: 403 });
       }
       const pair = new WebSocketPair();
@@ -246,21 +257,22 @@ export class GameRoom extends DurableObject {
 
   // ------------------------------------------------------------- join/leave
 
-  handleJoin(pid, name, ws) {
-    const g = this.g;
+  handleJoin(pid: string, name: string, ws: WebSocket) {
+    const g = this.g!;
     this.touch();
     g.creatorPid ??= pid; // first joiner founded the lobby — hosting defaults to them
     let p = g.players[pid];
     if (!p) {
       const takenRoles = Object.values(g.players).filter((x) => x.connected).map((x) => x.role);
-      const role = ROLES.find((r) => !takenRoles.includes(r)) || pick(ROLES);
-      p = {
+      // fresh joins always land on a playing role — spectator is opt-in
+      const role: PlayerRole = ROLES.find((r) => !takenRoles.includes(r)) || pick(ROLES);
+      p = <Player>{
         id: pid, name, role,
         isHost: !Object.values(g.players).some((x) => x.isHost),
         connected: true, joinedAt: Date.now(), controls: [],
       };
       g.players[pid] = p;
-      if (['playing', 'review'].includes(g.phase) && role !== 'spectator') this.dealPoolControls(p);
+      if (['playing', 'review'].includes(g.phase)) this.dealPoolControls(p);
       this.botSay('system', `${name} joined the team 👋`);
     } else {
       p.connected = true;
@@ -273,27 +285,27 @@ export class GameRoom extends DurableObject {
     this.broadcast({ t: 'players', players: this.publicPlayers() }, ws);
   }
 
-  webSocketClose(ws) {
+  webSocketClose(ws: WebSocket) {
     const att = ws.deserializeAttachment();
     if (!att || !this.g) return;
     const stillHere = this.ctx.getWebSockets().some(
       (o) => o !== ws && o.deserializeAttachment()?.pid === att.pid,
     );
     if (stillHere) return;
-    const p = this.g.players[att.pid];
+    const p = this.g!.players[att.pid];
     if (!p) return;
     p.connected = false;
     if (p.isHost) {
       p.isHost = false;
       // hosting falls back to the lobby's creator when present, else seniority
-      const next = Object.values(this.g.players)
+      const next = Object.values(this.g!.players)
         .filter((x) => x.connected)
         .sort((a, b) =>
-          (b.id === this.g.creatorPid) - (a.id === this.g.creatorPid) || a.joinedAt - b.joinedAt)[0];
+          Number(b.id === this.g!.creatorPid) - Number(a.id === this.g!.creatorPid) || a.joinedAt - b.joinedAt)[0];
       if (next) next.isHost = true;
     }
-    if (['playing', 'review'].includes(this.g.phase)) {
-      const orphaned = this.g.tasks.filter((t) => t.ownerPid === p.id || t.displayPid === p.id);
+    if (['playing', 'review'].includes(this.g!.phase)) {
+      const orphaned = this.g!.tasks.filter((t) => t.ownerPid === p.id || t.displayPid === p.id);
       for (const t of orphaned) this.finishTask(t, 'cancelled');
       if (orphaned.length) {
         this.botSay('system', `${p.name} stepped away — ${orphaned.length} task(s) reassigned to the void.`);
@@ -304,7 +316,7 @@ export class GameRoom extends DurableObject {
         // present — plus the pool dial an active incident depends on, if the
         // leaver held the only copy
         const moves = p.controls.filter((c) => c.crit);
-        const reqKey = this.g.incident && INCIDENTS[this.g.incident.kind]?.requiresControl;
+        const reqKey = this.g!.incident && INCIDENTS[this.g!.incident.kind]?.requiresControl;
         if (reqKey) {
           const mine = p.controls.find((c) => c.key === reqKey && !c.crit);
           const elsewhere = remaining.some((pl) => pl.controls.some((c) => c.key === reqKey));
@@ -317,17 +329,17 @@ export class GameRoom extends DurableObject {
           this.botSay('system', `${p.name}'s ops controls were handed to ${heir.name} 🎛️`);
         }
         // recount quorums that lost a holder so missions stay winnable
-        for (const t of this.g.tasks.filter((t) => t.quorum)) {
+        for (const t of this.g!.tasks.filter((t): t is DialTask => isDialTask(t) && !!t.quorum)) {
           const holders = remaining.filter((pl) => pl.controls.some((c) => c.key === t.controlKey));
           if (!holders.length) { this.finishTask(t, 'cancelled'); continue; }
-          const ctl = holders[0].controls.find((c) => c.key === t.controlKey);
+          const ctl = holders[0].controls.find((c) => c.key === t.controlKey)!;
           const have = ctl.type === 'button'
-            ? t.pressedBy.length
-            : holders.filter((pl) => pl.controls.find((c) => c.key === t.controlKey).value === t.target).length;
-          t.quorum.holders = holders.length;
-          t.quorum.required = Math.min(t.quorum.required, holders.length);
-          t.quorum.have = have;
-          if (have >= t.quorum.required) this.completeTask(t);
+            ? (t.pressedBy ?? []).length
+            : holders.filter((pl) => pl.controls.find((c) => c.key === t.controlKey)!.value === t.target).length;
+          t.quorum!.holders = holders.length;
+          t.quorum!.required = Math.min(t.quorum!.required, holders.length);
+          t.quorum!.have = have;
+          if (have >= t.quorum!.required) this.completeTask(t);
           else this.broadcast({ t: 'task', task: t });
         }
       }
@@ -336,15 +348,15 @@ export class GameRoom extends DurableObject {
     this.broadcast({ t: 'players', players: this.publicPlayers() });
   }
 
-  webSocketError(ws) { this.webSocketClose(ws); }
+  webSocketError(ws: WebSocket) { this.webSocketClose(ws); }
 
   // ------------------------------------------------------------- messages
 
-  webSocketMessage(ws, raw) {
-    let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
+  webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer) {
+    let msg: ClientMsg;
+    try { msg = JSON.parse(raw as string); } catch { return; }
     const att = ws.deserializeAttachment();
-    const g = this.g;
+    const g = this.g!;
     if (!att || !g) return;
     const p = g.players[att.pid];
     if (!p) return;
@@ -434,11 +446,11 @@ export class GameRoom extends DurableObject {
         break;
       }
       case 'triage_pick': {
-        this.answerTask(p, msg.taskId, 'triage', (task) => Number(msg.choice) === task.answer);
+        this.answerTask<TriageTask>(p, msg.taskId, 'triage', (task) => Number(msg.choice) === task.answer);
         break;
       }
       case 'design_pick': {
-        this.answerTask(p, msg.taskId, 'design', (task) => Number(msg.choice) === task.answer);
+        this.answerTask<DesignTask>(p, msg.taskId, 'design', (task) => Number(msg.choice) === task.answer);
         break;
       }
       case 'hint': {
@@ -471,17 +483,20 @@ export class GameRoom extends DurableObject {
     }
   }
 
-  applyConfig(patch) {
-    const c = this.g.config;
-    const num = (k, lo, hi) => { if (typeof patch[k] === 'number' && !Number.isNaN(patch[k])) c[k] = clamp(patch[k], lo, hi); };
-    if (typeof patch.preset === 'string' && PRESETS[patch.preset]) {
-      const { startingServices, ...knobs } = PRESETS[patch.preset];
+  applyConfig(patch: Omit<Partial<GameConfig>, 'incidents'> & { incidents?: Partial<Record<IncidentKind, boolean>> }) {
+    const c = this.g!.config;
+    const num = (k: NumericConfigKey, lo: number, hi: number) => {
+      const v = patch[k];
+      if (typeof v === 'number' && !Number.isNaN(v)) c[k] = clamp(v, lo, hi);
+    };
+    if (typeof patch.preset === 'string' && PRESETS[patch.preset as PresetId]) {
+      const { startingServices, ...knobs } = PRESETS[patch.preset as PresetId];
       Object.assign(c, structuredClone(DEFAULT_CONFIG), knobs, {
         preset: patch.preset, incidents: c.incidents, mode: c.mode, megaMode: c.megaMode,
         codeChance: c.codeChance, triageChance: c.triageChance, designChance: c.designChance,
         botChatter: c.botChatter, hintsEnabled: c.hintsEnabled,
       });
-      this.g.services = [...CORE_SERVICES, ...startingServices];
+      this.g!.services = [...CORE_SERVICES, ...startingServices];
     }
     if (typeof patch.mode === 'string' && MODES[patch.mode]) {
       c.mode = patch.mode;
@@ -510,8 +525,9 @@ export class GameRoom extends DurableObject {
     if (typeof patch.megaMode === 'boolean') c.megaMode = patch.megaMode;
     if (typeof patch.hintsEnabled === 'boolean') c.hintsEnabled = patch.hintsEnabled;
     if (patch.incidents && typeof patch.incidents === 'object') {
-      for (const k of Object.keys(INCIDENTS)) {
-        if (typeof patch.incidents[k] === 'boolean') c.incidents[k] = patch.incidents[k];
+      for (const k of Object.keys(INCIDENTS) as IncidentKind[]) {
+        const v = patch.incidents[k];
+        if (typeof v === 'boolean') c.incidents[k] = v;
       }
     }
     // mode & botChatter are orthogonal to pacing — only knob changes mark the preset custom
@@ -521,12 +537,12 @@ export class GameRoom extends DurableObject {
     }
   }
 
-  // Quiz-style missions (triage): right answer completes, wrong answers share
-  // one penalty policy.
-  answerTask(p, taskId, kind, isCorrect) {
-    const g = this.g;
+  // Quiz-style missions (triage/design): right answer completes, wrong
+  // answers share one penalty policy.
+  answerTask<T extends Task>(p: Player, taskId: string, kind: T['kind'], isCorrect: (task: T) => boolean) {
+    const g = this.g!;
     if (g.phase !== 'playing') return;
-    const task = g.tasks.find((x) => x.id === taskId && x.kind === kind);
+    const task = g.tasks.find((x) => x.id === taskId && x.kind === kind) as T | undefined;
     if (!task || task.displayPid !== p.id) return;
     if (isCorrect(task)) {
       this.completeTask(task, p);
@@ -536,8 +552,8 @@ export class GameRoom extends DurableObject {
     this.persist();
   }
 
-  penalizeGuess(task) {
-    const g = this.g;
+  penalizeGuess(task: Task) {
+    const g = this.g!;
     task.wrongGuesses = (task.wrongGuesses ?? 0) + 1;
     task.deadlineAt -= GUESS_PENALTY.secs * 1000;
     g.score = Math.max(0, g.score - GUESS_PENALTY.points);
@@ -547,10 +563,10 @@ export class GameRoom extends DurableObject {
 
   // Code review, act 1: tap the broken line. A correct tap patches the line in
   // place (the card re-renders the fix); the mission still needs a ship.
-  handleCodeGuess(p, taskId, line) {
-    const g = this.g;
+  handleCodeGuess(p: Player, taskId: string, line: number) {
+    const g = this.g!;
     if (g.phase !== 'playing') return;
-    const task = g.tasks.find((x) => x.id === taskId && x.kind === 'code');
+    const task = g.tasks.find((x) => x.id === taskId && x.kind === 'code') as CodeTask | undefined;
     if (!task || task.displayPid !== p.id || task.patched) return;
     if (task.bugLine >= 0 && line === task.bugLine) {
       task.patched = true;
@@ -564,10 +580,10 @@ export class GameRoom extends DurableObject {
 
   // Code review, act 2: ship it. Shipping with the bug still in there is
   // where production pain comes from.
-  handleCodeShip(p, taskId) {
-    const g = this.g;
+  handleCodeShip(p: Player, taskId: string) {
+    const g = this.g!;
     if (g.phase !== 'playing') return;
-    const task = g.tasks.find((x) => x.id === taskId && x.kind === 'code');
+    const task = g.tasks.find((x) => x.id === taskId && x.kind === 'code') as CodeTask | undefined;
     if (!task || task.displayPid !== p.id) return;
     if (task.bugLine < 0 || task.patched) {
       this.completeTask(task, p);
@@ -580,11 +596,11 @@ export class GameRoom extends DurableObject {
   // A bug made it to prod. The build "ships" (kanban moves on) but the sim
   // takes real damage: backend pods crash-loop or the frontend melts down —
   // recovered the same way real incidents are (restart / hotfix).
-  shipBuggy(task, p) {
-    const g = this.g;
+  shipBuggy(task: CodeTask, p: Player) {
+    const g = this.g!;
     g.score += Math.round(task.points * 0.3); // it did ship… technically
-    g.stats.shipped++; g.sprintStats.shipped++;
-    g.stats.bugsShipped++; g.sprintStats.bugsShipped++;
+    g.stats.shipped++; g.sprintStats!.shipped++;
+    g.stats.bugsShipped++; g.sprintStats!.bugsShipped++;
     this.finishTask(task, 'done');
     const causeId = this.logEvent('bug_shipped', `Shipped with a bug: ${task.title}`, { actor: p.name });
     const backendHit = Math.random() < 0.5;
@@ -608,23 +624,23 @@ export class GameRoom extends DurableObject {
 
   // ------------------------------------------------------------- event ledger
 
-  logEvent(type, label, opts = {}) {
-    const e = { id: uid(), ts: Date.now(), type, label, ...opts };
-    this.g.events.push(e);
-    if (this.g.events.length > 400) this.g.events.shift();
+  logEvent(type: string, label: string, opts: Partial<GameEvent> = {}): string {
+    const e: GameEvent = { id: uid(), ts: Date.now(), type, label, ...opts };
+    this.g!.events.push(e);
+    if (this.g!.events.length > 400) this.g!.events.shift();
     return e.id;
   }
 
-  closeEvent(id, patch = {}) {
+  closeEvent(id: string | null | undefined, patch: Partial<GameEvent> = {}) {
     if (!id) return;
-    const e = this.g.events.find((x) => x.id === id);
+    const e = this.g!.events.find((x) => x.id === id);
     if (e && !e.end) Object.assign(e, { end: Date.now() }, patch);
   }
 
   // Which open situation does an ops action most plausibly address? Links the
   // fixing action to its cause in the ledger.
-  actionCause(key) {
-    const open = this.g.openEv;
+  actionCause(key: string): string | null {
+    const open = this.g!.openEv;
     if (open.crash && key === 'restart_backend') return open.crash;
     if (open.badDeploy && key === 'hotfix') return open.badDeploy;
     return open.incident;
@@ -632,19 +648,19 @@ export class GameRoom extends DurableObject {
 
   // ------------------------------------------------------------- controls helpers
 
-  findControl(key) {
-    for (const p of Object.values(this.g.players)) {
+  findControl(key: string): { p: Player; c: ControlInstance } | null {
+    for (const p of Object.values(this.g!.players)) {
       const c = p.controls.find((c) => c.key === key);
       if (c) return { p, c };
     }
     return null;
   }
 
-  ctlVal(key, fallback = 0) {
+  ctlVal(key: string, fallback = 0): number {
     // in mega mode a pool dial exists on several screens — the sim honors the
     // strongest connected copy so any holder's action counts
-    if (this.g.config.megaMode) {
-      let best = null;
+    if (this.g!.config.megaMode) {
+      let best: number | null = null;
       for (const p of this.activePlayers()) {
         const c = p.controls.find((c) => c.key === key);
         if (c && (best === null || c.value > best)) best = c.value;
@@ -654,7 +670,7 @@ export class GameRoom extends DurableObject {
     return this.findControl(key)?.c.value ?? fallback;
   }
 
-  setCtl(key, value) {
+  setCtl(key: string, value: number) {
     const found = this.findControl(key);
     if (!found) return;
     found.c.value = value;
@@ -663,12 +679,12 @@ export class GameRoom extends DurableObject {
 
   // ------------------------------------------------------------- game flow
 
-  activePlayers() {
-    return Object.values(this.g.players).filter((p) => p.connected && p.role !== 'spectator');
+  activePlayers(): Player[] {
+    return Object.values(this.g!.players).filter((p) => p.connected && p.role !== 'spectator');
   }
 
   startGame() {
-    const g = this.g;
+    const g = this.g!;
     if (this.activePlayers().length === 0) return;
     g.score = 0;
     g.health = 100;
@@ -693,29 +709,29 @@ export class GameRoom extends DurableObject {
   }
 
   buildBacklog() {
-    const g = this.g;
+    const g = this.g!;
     const epics = shuffle(EPIC_FEATURES.filter((e) => !g.services.includes(e.service)));
     const base = shuffle(FEATURES);
     // interleave: an epic every ~3 features so the infra grows steadily
-    const out = [];
+    const out: BacklogItem[] = [];
     while (base.length || epics.length) {
       out.push(...base.splice(0, 2).map((title) => ({ title })));
-      if (epics.length) out.push(epics.shift());
+      if (epics.length) out.push(epics.shift()!);
     }
     g.backlog = out;
   }
 
-  leastLoaded(players) {
+  leastLoaded(players: Player[]): Player[] {
     return [...players].sort((a, b) => a.controls.length - b.controls.length);
   }
 
   dealAllControls() {
     const players = this.activePlayers();
-    const cfg = this.g.config;
+    const cfg = this.g!.config;
     for (const p of players) p.controls = [];
     for (const def of shuffle(CRITICAL_CONTROLS)) {
       const byLoad = this.leastLoaded(players);
-      (byLoad.find((p) => p.role === def.role) || byLoad[0]).controls.push(this.instantiate(def, true));
+      (byLoad.find((p) => p.role === def.role) || byLoad[0])!.controls.push(this.instantiate(def, true));
     }
     if (cfg.megaMode) {
       // mega mode: deal a small set of pool dials so every dial lives on
@@ -743,7 +759,7 @@ export class GameRoom extends DurableObject {
       const rest = pool.filter((d) => d.role !== p.role);
       // small teams end up crit-heavy (8 crit dials over few hands) — always
       // deal at least 2 mission dials on top so dial missions can spawn
-      const want = Math.max(this.g.config.controlsPerPlayer, p.controls.length + 2);
+      const want = Math.max(this.g!.config.controlsPerPlayer, p.controls.length + 2);
       for (const def of [...preferred, ...rest]) {
         if (p.controls.length >= want) break;
         if (p.controls.some((c) => c.key === def.key)) continue;
@@ -753,10 +769,10 @@ export class GameRoom extends DurableObject {
     }
   }
 
-  dealPoolControls(p) {
-    const cfg = this.g.config;
+  dealPoolControls(p: Player) {
+    const cfg = this.g!.config;
     const taken = new Set(
-      Object.values(this.g.players).flatMap((x) => x.controls.map((c) => c.key)),
+      Object.values(this.g!.players).flatMap((x) => x.controls.map((c) => c.key)),
     );
     if (cfg.megaMode) {
       // late joiners swell the existing quorum pools before drawing new dials
@@ -771,28 +787,30 @@ export class GameRoom extends DurableObject {
     const preferred = pool.filter((d) => d.role === p.role);
     const rest = pool.filter((d) => d.role !== p.role);
     p.controls = [...preferred, ...rest]
-      .slice(0, this.g.config.controlsPerPlayer)
+      .slice(0, this.g!.config.controlsPerPlayer)
       .map((d) => this.instantiate(d, false));
   }
 
-  instantiate(def, crit) {
-    const c = { key: def.key, label: def.label, type: def.type, value: 0, crit };
+  instantiate(def: ControlDef, crit: boolean): ControlInstance {
+    const c: ControlInstance = { key: def.key, label: def.label, type: def.type, value: 0, crit };
     if (def.type === 'slider') {
-      c.min = def.min ?? 0;
-      c.max = def.max;
-      c.value = c.min + rnd(c.max - c.min + 1);
+      const min = def.min ?? 0;
+      const max = def.max ?? min;
+      c.min = min;
+      c.max = max;
+      c.value = min + rnd(max - min + 1);
     }
-    if (def.type === 'select') { c.options = def.options; c.value = rnd(def.options.length); }
+    if (def.type === 'select') { c.options = def.options; c.value = rnd(def.options!.length); }
     if (def.type === 'toggle') c.value = rnd(2);
-    if (def.key in CRITICAL_INIT) c.value = CRITICAL_INIT[def.key];
+    if (def.key in CRITICAL_INIT) c.value = CRITICAL_INIT[def.key as keyof typeof CRITICAL_INIT];
     if (def.key === 'dns_primary') c.value = rnd(REGIONS.length);
     return c;
   }
 
-  ramp() { return 1 + this.g.config.difficultyRamp * (this.g.sprint - 1); }
+  ramp() { return 1 + this.g!.config.difficultyRamp * (this.g!.sprint - 1); }
 
-  startSprint(n) {
-    const g = this.g;
+  startSprint(n: number) {
+    const g = this.g!;
     const now = Date.now();
     g.phase = 'playing';
     g.sprint = n;
@@ -815,8 +833,8 @@ export class GameRoom extends DurableObject {
   }
 
   endSprint() {
-    const g = this.g;
-    const s = g.sprintStats;
+    const g = this.g!;
+    const s = g.sprintStats!;
     s.scoreDelta = g.score - s.scoreStart;
     g.stats.sprints.push({ sprint: g.sprint, ...s });
     for (const t of g.tasks) this.finishTask(t, 'cancelled');
@@ -837,9 +855,12 @@ export class GameRoom extends DurableObject {
   }
 
   endGame() {
-    const g = this.g;
+    const g = this.g!;
     g.phase = 'ended';
-    for (const k of Object.keys(g.openEv)) { this.closeEvent(g.openEv[k]); g.openEv[k] = null; }
+    for (const k of Object.keys(g.openEv) as (keyof GameState['openEv'])[]) {
+      this.closeEvent(g.openEv[k]);
+      g.openEv[k] = null;
+    }
     g.analysis = this.analyzeGame();
     this.botSay('ceo', g.victory
       ? 'We shipped the roadmap AND the site is up?! Promotions for everyone. (Figuratively.)'
@@ -852,10 +873,10 @@ export class GameRoom extends DurableObject {
 
   // Post-game cause analysis: read the ledger, spot the team's recurring
   // failure modes, and say them out loud for the retro.
-  analyzeGame() {
-    const g = this.g;
+  analyzeGame(): AnalysisItem[] {
+    const g = this.g!;
     const ev = g.events;
-    const out = [];
+    const out: AnalysisItem[] = [];
     const incidents = ev.filter((e) => e.type === 'incident');
     const resolved = incidents.filter((e) => e.outcome === 'resolved');
     const failed = incidents.filter((e) => e.outcome === 'failed');
@@ -874,18 +895,19 @@ export class GameRoom extends DurableObject {
       });
     }
 
-    const byKind = {};
-    for (const i of incidents) byKind[i.kind] = (byKind[i.kind] ?? 0) + 1;
-    const [topKind, topCount] = Object.entries(byKind).sort((a, b) => b[1] - a[1])[0] || [];
-    if (topCount >= 2) {
-      const t = INCIDENTS[topKind];
+    const byKind: Record<string, number> = {};
+    for (const i of incidents) if (i.kind) byKind[i.kind] = (byKind[i.kind] ?? 0) + 1;
+    const top = Object.entries(byKind).sort((a, b) => b[1] - a[1])[0];
+    if (top && top[1] >= 2) {
+      const [topKind, topCount] = top;
+      const t = INCIDENTS[topKind as IncidentKind];
       out.push({
         icon: '🔁', title: `Recurring failure mode: ${t?.shortLabel?.toLowerCase() ?? topKind} ×${topCount}`,
         detail: `The same class of incident kept coming back. Post-incident fix that sticks: ${t?.hint ?? 'write the runbook.'}`,
       });
     }
 
-    const mttr = resolved.map((e) => (e.end - e.ts) / 1000);
+    const mttr = resolved.map((e) => (e.end! - e.ts) / 1000);
     if (mttr.length) {
       const avg = Math.round(mttr.reduce((a, b) => a + b, 0) / mttr.length);
       out.push(avg <= g.config.incidentDeadlineSec / 2
@@ -917,7 +939,7 @@ export class GameRoom extends DurableObject {
   }
 
   toLobby() {
-    const g = this.g;
+    const g = this.g!;
     g.phase = 'lobby';
     g.sprint = 0;
     g.tasks = [];
@@ -925,7 +947,7 @@ export class GameRoom extends DurableObject {
     g.incident = null;
     g.sim = freshSim();
     for (const p of Object.values(g.players)) p.controls = [];
-    const { startingServices = [] } = PRESETS[g.config.preset] || {};
+    const { startingServices = [] } = PRESETS[g.config.preset as PresetId] || {};
     g.services = [...CORE_SERVICES, ...startingServices];
     this.persist();
     // ticking stops, but the idle sweep must keep running
@@ -935,11 +957,11 @@ export class GameRoom extends DurableObject {
 
   // ------------------------------------------------------------- simulation
 
-  simTick(now) {
-    const g = this.g;
+  simTick(now: number) {
+    const g = this.g!;
     const sim = g.sim;
     const cfg = g.config;
-    const has = (svc) => g.services.includes(svc);
+    const has = (svc: string) => g.services.includes(svc);
     const inc = g.incident;
 
     // --- demand ---
@@ -1059,17 +1081,17 @@ export class GameRoom extends DurableObject {
 
   // Per-service map stats: `v` is the one-line headline on the node, `s` the
   // status, `d` the detail rows shown in the node inspector.
-  nodeStats() {
-    const g = this.g;
+  nodeStats(): Record<string, NodeStat> {
+    const g = this.g!;
     const sim = g.sim;
-    const has = (svc) => g.services.includes(svc);
+    const has = (svc: string) => g.services.includes(svc);
     const dnsRegion = REGIONS[this.ctlVal('dns_primary', 0)];
     const replicas = this.ctlVal('replicas', 3);
     const breakerOn = this.ctlVal('circuit_breaker') === 1;
     const firewall = this.ctlVal('firewall', 2);
     const cacheTtl = this.ctlVal('cache_ttl', 3);
     const drain = this.ctlVal('queue_drain', 4);
-    const nodes = {};
+    const nodes: Record<string, NodeStat> = {};
 
     nodes.dns = {
       v: dnsRegion,
@@ -1101,7 +1123,7 @@ export class GameRoom extends DurableObject {
         ['utilization', `${Math.round(sim.util * 100)}%`],
         ['pods healthy', `${Math.max(0, replicas - sim.crashedPods)}/${replicas}`],
         ['autoscaler', this.ctlVal('autoscaler') === 1 ? 'on' : 'off'],
-        ...(sim.leak > 0 ? [['memory', `leaking (+${Math.round(sim.leak * 100)}%)`]] : []),
+        ...(sim.leak > 0 ? ([['memory', `leaking (+${Math.round(sim.leak * 100)}%)`]] as [string, string][]) : []),
       ],
     };
     const backupFreq = this.ctlVal('backup_freq', 3);
@@ -1162,7 +1184,7 @@ export class GameRoom extends DurableObject {
   // ------------------------------------------------------------- tick
 
   async alarm() {
-    const g = this.g;
+    const g = this.g!;
     if (!g) return;
     // idle sweep: sockets present keep the room alive; a room untouched for
     // ROOM_TTL_MS with nobody connected deletes itself
@@ -1187,7 +1209,7 @@ export class GameRoom extends DurableObject {
 
     const now = Date.now();
     g.tickCount++;
-    const logs = [];
+    const logs: LogLine[] = [];
 
     this.simTick(now);
 
@@ -1196,7 +1218,7 @@ export class GameRoom extends DurableObject {
       if (now >= t.deadlineAt) {
         this.finishTask(t, 'failed');
         g.health -= g.config.missPenalty;
-        g.stats.missed++; g.sprintStats.missed++;
+        g.stats.missed++; g.sprintStats!.missed++;
         this.logEvent('missed', `Missed: ${t.title}`, { actor: t.ownerName });
         if (g.config.botChatter && Math.random() < 0.4) {
           this.botSay('support', `Ticket escalated: "${t.title}" — customer says "unacceptable" 😤`);
@@ -1231,11 +1253,13 @@ export class GameRoom extends DurableObject {
     g.metrics.push(point);
     if (g.metrics.length > 90) g.metrics.shift();
     for (const l of logs) { g.logs.push(l); if (g.logs.length > 120) g.logs.shift(); }
-    let trace = null;
+    let trace: Trace | null = null;
     if (now >= g.nextTraceAt) {
       trace = this.makeTrace(now);
-      g.traces.push(trace);
-      if (g.traces.length > 20) g.traces.shift();
+      if (trace) {
+        g.traces.push(trace);
+        if (g.traces.length > 20) g.traces.shift();
+      }
       g.nextTraceAt = now + 3000 + rnd(3000);
     }
     g.nodes = this.nodeStats();
@@ -1248,7 +1272,7 @@ export class GameRoom extends DurableObject {
       for (const t of [...g.tasks]) this.finishTask(t, 'cancelled');
       if (g.incident) this.clearIncident(false);
       if (g.sprintStats) {
-        g.sprintStats.scoreDelta = g.score - g.sprintStats.scoreStart;
+        g.sprintStats!.scoreDelta = g.score - g.sprintStats!.scoreStart;
         g.stats.sprints.push({ sprint: g.sprint, ...g.sprintStats });
       }
       this.persist();
@@ -1271,32 +1295,32 @@ export class GameRoom extends DurableObject {
 
   // ------------------------------------------------------------- tasks
 
-  targetedControls() {
-    const set = new Set();
-    for (const t of this.g.tasks) set.add(t.controlKey);
+  targetedControls(): Set<string> {
+    const set = new Set<string>();
+    for (const t of this.g!.tasks) if (isDialTask(t)) set.add(t.controlKey);
     return set;
   }
 
-  pickBacklogItem(isBug) {
-    const g = this.g;
+  pickBacklogItem(isBug: boolean): BacklogItem {
+    const g = this.g!;
     if (isBug) return { title: pick(BUGS) };
     if (!g.backlog.length) g.backlog = shuffle(FEATURES).map((title) => ({ title }));
-    return g.backlog.shift();
+    return g.backlog.shift()!;
   }
 
   taskDeadline(mult = 1) {
-    return (this.g.config.taskDeadlineSec * 1000 * mult) / (1 + 0.15 * (this.g.sprint - 1));
+    return (this.g!.config.taskDeadlineSec * 1000 * mult) / (1 + 0.15 * (this.g!.sprint - 1));
   }
 
   // spread work evenly: new tasks land on the least-loaded screen
-  pickDisplay(displays) {
-    const load = (p) => this.g.tasks.filter((t) => t.displayPid === p.id).length;
+  pickDisplay(displays: Player[]): Player {
+    const load = (p: Player) => this.g!.tasks.filter((t) => t.displayPid === p.id).length;
     const min = Math.min(...displays.map(load));
     return pick(displays.filter((p) => load(p) === min));
   }
 
   spawnTask() {
-    const g = this.g;
+    const g = this.g!;
     const players = this.activePlayers();
     if (!players.length) return;
     const displays = players.filter(
@@ -1319,7 +1343,7 @@ export class GameRoom extends DurableObject {
     // tasks only target mission dials (pool controls) — the ops console is
     // reserved for running the actual system
     const targeted = this.targetedControls();
-    const eligible = (p) => p.controls.filter((c) => !c.crit && !targeted.has(c.key));
+    const eligible = (p: Player) => p.controls.filter((c) => !c.crit && !targeted.has(c.key));
     const owners = shuffle(players).filter((p) => eligible(p).length > 0);
     if (!owners.length) return;
     const owner = owners[0];
@@ -1331,14 +1355,14 @@ export class GameRoom extends DurableObject {
 
     // tutorial nudge: everyone's first ticket or two says where the dial
     // actually lives — new players don't yet know what's on whose console
-    let locHint = null;
+    let locHint: string | null = null;
     display.dialHints ??= 0;
     if (display.dialHints < 2) {
       display.dialHints++;
       locHint = owner.id === display.id ? 'you' : owner.name;
     }
 
-    const task = {
+    const task: DialTask = {
       id: uid(),
       kind: isBug ? 'bug' : 'feature',
       title: item.title,
@@ -1363,20 +1387,20 @@ export class GameRoom extends DurableObject {
   }
 
   // A new value for a dial that differs from its current one.
-  rollTarget(control) {
+  rollTarget(control: ControlInstance): number {
     let target = 1;
     if (control.type === 'toggle') target = control.value ? 0 : 1;
     if (control.type === 'slider') {
       const min = control.min ?? 0;
-      do { target = min + rnd(control.max - min + 1); } while (target === control.value);
+      do { target = min + rnd(control.max! - min + 1); } while (target === control.value);
     }
-    if (control.type === 'select') { do { target = rnd(control.options.length); } while (target === control.value); }
+    if (control.type === 'select') { do { target = rnd(control.options!.length); } while (target === control.value); }
     return target;
   }
 
   // Draw an unused item from a content pool, recycling the used-list when the
   // pool runs dry. Mutates usedList in place.
-  drawFresh(pool, usedList, keyOf, inUseKeys) {
+  drawFresh<T>(pool: readonly T[], usedList: string[], keyOf: (x: T) => string, inUseKeys: Set<string>): T | null {
     let avail = pool.filter((x) => !inUseKeys.has(keyOf(x)) && !usedList.includes(keyOf(x)));
     if (!avail.length) {
       usedList.length = 0;
@@ -1390,11 +1414,11 @@ export class GameRoom extends DurableObject {
 
   // Mega-mode dial mission: the same dial lives on several screens and the
   // mission only completes once enough holders perform the action.
-  spawnQuorumTask(displays) {
-    const g = this.g;
+  spawnQuorumTask(displays: Player[]): boolean {
+    const g = this.g!;
     const players = this.activePlayers();
     const targeted = this.targetedControls();
-    const holders = {};
+    const holders: Record<string, { p: Player; c: ControlInstance }[]> = {};
     for (const p of players) {
       for (const c of p.controls) {
         if (!c.crit && !targeted.has(c.key)) (holders[c.key] ??= []).push({ p, c });
@@ -1406,13 +1430,13 @@ export class GameRoom extends DurableObject {
     const sample = hs[0].c;
 
     // aim at the least-held value so the mission is never pre-satisfied
-    const countAt = (v) => hs.filter(({ c }) => c.value === v).length;
+    const countAt = (v: number) => hs.filter(({ c }) => c.value === v).length;
     let values = [0, 1];
     if (sample.type === 'slider') {
       const min = sample.min ?? 0;
-      values = Array.from({ length: sample.max - min + 1 }, (_, i) => min + i);
+      values = Array.from({ length: sample.max! - min + 1 }, (_, i) => min + i);
     }
-    if (sample.type === 'select') values = sample.options.map((_, i) => i);
+    if (sample.type === 'select') values = sample.options!.map((_, i) => i);
     if (sample.type === 'button') values = [1];
     const order = shuffle(values);
     let target = order[0];
@@ -1424,7 +1448,7 @@ export class GameRoom extends DurableObject {
     const item = this.pickBacklogItem(isBug);
     const display = this.pickDisplay(displays);
 
-    const task = {
+    const task: DialTask = {
       id: uid(),
       kind: isBug ? 'bug' : 'feature',
       title: item.title,
@@ -1453,12 +1477,14 @@ export class GameRoom extends DurableObject {
   // pool for THIS task's title, so code and description always match. The
   // reviewer taps the broken line to patch it, then ships. Some builds arrive
   // already clean — shipping those untouched is the right call.
-  spawnCodeTask(displays) {
-    const g = this.g;
+  spawnCodeTask(displays: Player[]): boolean {
+    const g = this.g!;
     const isBug = Math.random() < g.config.bugChance;
     const item = this.pickBacklogItem(isBug);
     const pool = SNIPPETS_BY_TITLE[item.title] || CODE_SNIPPETS;
-    const inUse = new Set(g.tasks.filter((t) => t.kind === 'code').map((t) => t.snippetId));
+    const inUse = new Set(
+      g.tasks.filter((t): t is CodeTask => t.kind === 'code').map((t) => t.snippetId),
+    );
     const snippet = this.drawFresh(pool, g.usedSnippets, (s) => s.id, inUse);
     if (!snippet) return false;
 
@@ -1477,7 +1503,7 @@ export class GameRoom extends DurableObject {
     const lines = [...snippet.lines];
     if (clean) lines[snippet.bug] = snippet.fix;
 
-    const task = {
+    const task: CodeTask = {
       id: uid(), kind: 'code', codeKind, title,
       epicService: codeKind === 'service' ? item.service : null,
       instr: 'Review it: tap anything broken, then ship',
@@ -1498,44 +1524,56 @@ export class GameRoom extends DurableObject {
   // Design review — visual QA missions. Design is designer turf: they land on
   // designer screens first, and designers get an instinct marker on the right
   // option. Variants: match the swatch, spot the centered dot, match a radius.
-  spawnDesignTask(displays) {
-    const g = this.g;
+  spawnDesignTask(displays: Player[]): boolean {
+    const g = this.g!;
     const dsgDisplays = displays.filter((p) => p.role === 'designer');
     const display = this.pickDisplay(dsgDisplays.length ? dsgDisplays : displays);
-    const variant = pick(['shade', 'centered', 'radius']);
-    let title, instr, prompt = null, options, answer;
+    const variant = pick(['shade', 'centered', 'radius'] as const);
 
+    const base = {
+      id: uid(), kind: 'design' as const, wrongGuesses: 0,
+      displayPid: display.id, ownerPid: display.id, ownerName: display.name,
+      createdAt: Date.now(), deadlineAt: Date.now() + this.taskDeadline(1.2),
+      status: 'active' as const, points: 110,
+    };
+
+    let task: DesignTask;
     if (variant === 'shade') {
       const c = pick(DESIGN_COLORS);
       // one exact match among near-miss lightnesses
       const deltas = shuffle([0, ...shuffle([-14, -8, 8, 14]).slice(0, 3)]);
-      answer = deltas.indexOf(0);
-      options = deltas.map((d) => `hsl(${c.h} ${c.s}% ${clamp(c.l + d, 8, 92)}%)`);
-      prompt = { swatch: `hsl(${c.h} ${c.s}% ${c.l}%)`, name: c.name };
-      title = `Design QA: ${c.name}`;
-      instr = 'Tap the swatch that matches the brand color exactly';
+      task = {
+        ...base, designKind: 'shade',
+        title: `Design QA: ${c.name}`,
+        instr: 'Tap the swatch that matches the brand color exactly',
+        prompt: { swatch: `hsl(${c.h} ${c.s}% ${c.l}%)`, name: c.name },
+        options: deltas.map((d) => `hsl(${c.h} ${c.s}% ${clamp(c.l + d, 8, 92)}%)`),
+        answer: deltas.indexOf(0),
+      };
     } else if (variant === 'centered') {
       const off = () => pick([-1, 1]) * (4 + rnd(4));
-      options = shuffle([[0, 0], [off(), 0], [0, off()], [off(), off()]]);
-      answer = options.findIndex(([x, y]) => x === 0 && y === 0);
-      title = 'Design QA: alignment pass';
-      instr = 'Tap the card whose dot is perfectly centered';
+      const options: [number, number][] = shuffle([[0, 0], [off(), 0], [0, off()], [off(), off()]]);
+      task = {
+        ...base, designKind: 'centered',
+        title: 'Design QA: alignment pass',
+        instr: 'Tap the card whose dot is perfectly centered',
+        prompt: null,
+        options,
+        answer: options.findIndex(([x, y]) => x === 0 && y === 0),
+      };
     } else {
-      options = shuffle(DESIGN_RADII).slice(0, 4);
+      const options = shuffle(DESIGN_RADII).slice(0, 4);
       const target = pick(options);
-      answer = options.indexOf(target);
-      prompt = { radius: target };
-      title = 'Design QA: corner radius';
-      instr = `Tap the div with border-radius: ${target}px`;
+      task = {
+        ...base, designKind: 'radius',
+        title: 'Design QA: corner radius',
+        instr: `Tap the div with border-radius: ${target}px`,
+        prompt: { radius: target },
+        options,
+        answer: options.indexOf(target),
+      };
     }
 
-    const task = {
-      id: uid(), kind: 'design', designKind: variant, title, instr,
-      prompt, options, answer, wrongGuesses: 0,
-      displayPid: display.id, ownerPid: display.id, ownerName: display.name,
-      createdAt: Date.now(), deadlineAt: Date.now() + this.taskDeadline(1.2),
-      status: 'active', points: 110,
-    };
     g.tasks.push(task);
     this.broadcast({ t: 'task', task });
     return true;
@@ -1544,15 +1582,17 @@ export class GameRoom extends DurableObject {
   // Ticket triage — route a customer request or bug report to the right
   // priority. Triage is ops turf: tickets land on ops screens first, and ops
   // gets an instinct marker on the correct option.
-  spawnTriageTask(displays) {
-    const g = this.g;
-    const inUse = new Set(g.tasks.filter((t) => t.kind === 'triage').map((t) => t.ticketText));
+  spawnTriageTask(displays: Player[]): boolean {
+    const g = this.g!;
+    const inUse = new Set(
+      g.tasks.filter((t): t is TriageTask => t.kind === 'triage').map((t) => t.ticketText),
+    );
     const ticket = this.drawFresh(TRIAGE_TICKETS, g.usedTickets, (t) => t.text, inUse);
     if (!ticket) return false;
     const opsDisplays = displays.filter((p) => p.role === 'ops');
     const display = this.pickDisplay(opsDisplays.length ? opsDisplays : displays);
 
-    const task = {
+    const task: TriageTask = {
       id: uid(), kind: 'triage', triageKind: ticket.kind,
       title: ticket.kind === 'bug' ? 'Triage: bug report' : 'Triage: customer request',
       instr: 'Route it to the right priority',
@@ -1570,8 +1610,8 @@ export class GameRoom extends DurableObject {
     return true;
   }
 
-  finishTask(task, status) {
-    const g = this.g;
+  finishTask(task: Task, status: TaskStatus) {
+    const g = this.g!;
     task.status = status;
     g.tasks = g.tasks.filter((t) => t.id !== task.id);
     g.doneLog.push({ ...task, finishedAt: Date.now() });
@@ -1579,23 +1619,23 @@ export class GameRoom extends DurableObject {
     this.broadcast({ t: 'task', task });
   }
 
-  completeTask(task, by = null) {
-    const g = this.g;
+  completeTask(task: Task, by: Player | null = null) {
+    const g = this.g!;
     const fast = Date.now() - task.createdAt < (task.deadlineAt - task.createdAt) / 2;
     g.score += task.points + (fast ? 25 : 0);
     g.health = clamp(g.health + g.config.healOnComplete, 0, 100);
-    const asBug = task.kind === 'bug' || task.codeKind === 'bug';
+    const asBug = task.kind === 'bug' || (task.kind === 'code' && task.codeKind === 'bug');
     const actor = by?.name ?? task.ownerName;
-    let shipEventId = null;
+    let shipEventId: string | null = null;
     if (task.kind === 'triage') {
       g.stats.triaged = (g.stats.triaged ?? 0) + 1;
-      g.sprintStats.triaged = (g.sprintStats.triaged ?? 0) + 1;
+      g.sprintStats!.triaged = (g.sprintStats!.triaged ?? 0) + 1;
       this.logEvent('triage', `Triaged: ${task.ticketText?.slice(0, 60) ?? task.title}`, { actor });
     } else if (asBug) {
-      g.stats.bugsFixed++; g.sprintStats.bugsFixed++;
+      g.stats.bugsFixed++; g.sprintStats!.bugsFixed++;
       this.logEvent('fix', task.title.startsWith('Fix') ? task.title : `Fixed: ${task.title}`, { actor });
     } else {
-      g.stats.shipped++; g.sprintStats.shipped++;
+      g.stats.shipped++; g.sprintStats!.shipped++;
       shipEventId = this.logEvent('ship', task.title.startsWith('Build') ? task.title : `Shipped: ${task.title}`, { actor });
     }
     this.finishTask(task, 'done');
@@ -1606,8 +1646,8 @@ export class GameRoom extends DurableObject {
     }
   }
 
-  unlockService(svc, featureTitle, causeId = null) {
-    const g = this.g;
+  unlockService(svc: string, featureTitle: string, causeId: string | null = null) {
+    const g = this.g!;
     if (g.services.includes(svc)) return;
     g.services.push(svc);
     g.nodes = this.nodeStats();
@@ -1618,15 +1658,15 @@ export class GameRoom extends DurableObject {
 
   // ------------------------------------------------------------- incidents
 
-  spawnIncident(now) {
-    const g = this.g;
+  spawnIncident(now: number) {
+    const g = this.g!;
     const cfg = g.config;
     // scenarios that hinge on a pool dial only fire if that dial was dealt
-    const dealt = (key) => {
+    const dealt = (key: string) => {
       const found = this.findControl(key);
       return !!found && found.p.connected && found.p.role !== 'spectator';
     };
-    const enabled = Object.keys(INCIDENTS).filter((k) => {
+    const enabled = (Object.keys(INCIDENTS) as IncidentKind[]).filter((k) => {
       if (!cfg.incidents[k]) return false;
       const def = INCIDENTS[k];
       if (def.requires && !g.services.includes(def.requires)) return false;
@@ -1660,7 +1700,7 @@ export class GameRoom extends DurableObject {
     const base = {
       id: uid(), kind, startedAt: now,
       deadlineAt: now + cfg.incidentDeadlineSec * 1000,
-      status: 'active', goalDone: false,
+      status: 'active' as const, goalDone: false,
     };
     if (mode === 'realism') {
       g.incident = {
@@ -1676,10 +1716,10 @@ export class GameRoom extends DurableObject {
     this.broadcast({ t: 'incident', incident: g.incident });
   }
 
-  incidentGoalMet() {
-    const g = this.g;
+  incidentGoalMet(): boolean {
+    const g = this.g!;
     const sim = g.sim;
-    switch (g.incident.kind) {
+    switch (g.incident!.kind) {
       case 'outage': return sim.crashedPods === 0 && sim.util < 1;
       case 'spike': return sim.util < 0.9;
       case 'memleak': return sim.leakFixed && sim.util < 1;
@@ -1699,9 +1739,9 @@ export class GameRoom extends DurableObject {
     }
   }
 
-  updateIncident(now, logs) {
-    const g = this.g;
-    const inc = g.incident;
+  updateIncident(now: number, logs: LogLine[]) {
+    const g = this.g!;
+    const inc = g.incident!;
     g.health -= g.config.incidentDrainPerSec;
 
     if (Math.random() < 0.6) logs.push(this.makeLog(pick(INCIDENTS[inc.kind].logs)));
@@ -1715,7 +1755,7 @@ export class GameRoom extends DurableObject {
       if (g.sim.stableTicks >= 2) {
         const fast = now - inc.startedAt < (g.config.incidentDeadlineSec * 1000) / 2;
         g.score += 150 + (fast ? 50 : 0);
-        g.stats.incidentsResolved++; g.sprintStats.incidentsResolved++;
+        g.stats.incidentsResolved++; g.sprintStats!.incidentsResolved++;
         this.botSay('pager', `✅ Incident resolved: ${INCIDENTS[inc.kind].title}${fast ? ' — blazing fast, +50 bonus' : ''}.`);
         this.clearIncident(true);
         return;
@@ -1733,8 +1773,8 @@ export class GameRoom extends DurableObject {
     }
   }
 
-  clearIncident(resolved, silent = false) {
-    const g = this.g;
+  clearIncident(resolved: boolean, silent = false) {
+    const g = this.g!;
     if (!g.incident) return;
     const inc = g.incident;
     inc.status = resolved ? 'resolved' : 'failed';
@@ -1761,8 +1801,8 @@ export class GameRoom extends DurableObject {
 
   // ------------------------------------------------------------- control input
 
-  handleControl(p, key, value, press) {
-    const g = this.g;
+  handleControl(p: Player, key: string, value: number | undefined, press: boolean) {
+    const g = this.g!;
     if (g.phase !== 'playing') return;
     const control = p.controls.find((c) => c.key === key);
     if (!control) return;
@@ -1799,21 +1839,22 @@ export class GameRoom extends DurableObject {
     } else {
       if (typeof value !== 'number') return;
       if (control.type === 'toggle') value = value ? 1 : 0;
-      if (control.type === 'slider') value = clamp(Math.round(value), control.min ?? 0, control.max);
-      if (control.type === 'select') value = clamp(Math.round(value), 0, control.options.length - 1);
+      if (control.type === 'slider') value = clamp(Math.round(value), control.min ?? 0, control.max!);
+      if (control.type === 'select') value = clamp(Math.round(value), 0, control.options!.length - 1);
       control.value = value;
       this.broadcast({ t: 'control', pid: p.id, key, value });
       // sim-relevant dial moves while an incident is open join its causal chain
-      if (this.g.openEv.incident && CONTROL_SERVICE[key]) {
-        const shown = control.type === 'select' ? control.options[value] : value;
-        this.logEvent('action', `${p.name}: ${control.label} → ${shown}`, { actor: p.name, cause: this.g.openEv.incident });
+      if (this.g!.openEv.incident && CONTROL_SERVICE[key]) {
+        const shown = control.type === 'select' ? control.options![value] : value;
+        this.logEvent('action', `${p.name}: ${control.label} → ${shown}`, { actor: p.name, cause: this.g!.openEv.incident });
       }
     }
 
     // mega mode: quorum missions count actions from every holder of the dial
-    for (const task of g.tasks.filter((t) => t.quorum && t.controlKey === key)) {
-      let have;
+    for (const task of g.tasks.filter((t): t is DialTask => isDialTask(t) && !!t.quorum && t.controlKey === key)) {
+      let have: number;
       if (control.type === 'button') {
+        task.pressedBy ??= [];
         if (press && !task.pressedBy.includes(p.id)) task.pressedBy.push(p.id);
         have = task.pressedBy.length;
       } else {
@@ -1823,15 +1864,16 @@ export class GameRoom extends DurableObject {
           if (copy && copy.value === task.target) have++;
         }
       }
-      if (have === task.quorum.have) continue; // nothing moved — stay quiet
-      task.quorum.have = have;
-      if (have >= task.quorum.required) this.completeTask(task);
+      if (have === task.quorum!.have) continue; // nothing moved — stay quiet
+      task.quorum!.have = have;
+      if (have >= task.quorum!.required) this.completeTask(task);
       else this.broadcast({ t: 'task', task });
     }
 
     const effective = control.type === 'button' ? 1 : control.value;
     const match = g.tasks
-      .filter((t) => !t.quorum && t.ownerPid === p.id && t.controlKey === key && t.target === effective)
+      .filter((t): t is DialTask =>
+        isDialTask(t) && !t.quorum && t.ownerPid === p.id && t.controlKey === key && t.target === effective)
       .sort((a, b) => a.createdAt - b.createdAt)[0];
     if (match) this.completeTask(match);
 
@@ -1840,18 +1882,18 @@ export class GameRoom extends DurableObject {
 
   // ------------------------------------------------------------- telemetry
 
-  makeLog([level, svc, tmpl]) {
+  makeLog([level, svc, tmpl]: LogTemplate): LogLine {
     return {
       ts: Date.now(), level, svc,
       text: tmpl.replaceAll('{n}', String(20 + rnd(480))),
     };
   }
 
-  makeTrace(now) {
-    const g = this.g;
+  makeTrace(now: number): Trace | null {
+    const g = this.g!;
     const route = pick(TRACE_ROUTES.filter((r) => r.spans.every((s) => g.services.includes(s) || s === 'dns')));
     if (!route) return null;
-    const slowSvcs = new Set();
+    const slowSvcs = new Set<string>();
     if (g.sim.util > 0.9 || g.sim.crashedPods > 0) slowSvcs.add('backend');
     if (!g.sim.paymentsUp) slowSvcs.add('payments');
     if (g.sim.queueDepth > 150) slowSvcs.add('queue');
@@ -1868,19 +1910,19 @@ export class GameRoom extends DurableObject {
 
   // ------------------------------------------------------------- chat/bots
 
-  botSay(bot, text) {
+  botSay(bot: string, text: string) {
     const b = BOTS[bot] || BOTS.system;
     const m = { id: uid(), from: b.name, bot: true, icon: b.icon, text, ts: Date.now() };
-    this.g.chat.push(m);
-    if (this.g.chat.length > 100) this.g.chat.shift();
+    this.g!.chat.push(m);
+    if (this.g!.chat.length > 100) this.g!.chat.shift();
     this.broadcast({ t: 'chat', msg: m });
   }
 
   // ------------------------------------------------------------- wire
 
-  publicPlayers() {
-    const out = {};
-    for (const [pid, p] of Object.entries(this.g.players)) {
+  publicPlayers(): Record<string, Player> {
+    const out: Record<string, Player> = {};
+    for (const [pid, p] of Object.entries(this.g!.players)) {
       out[pid] = {
         id: p.id, name: p.name, role: p.role, isHost: p.isHost,
         connected: p.connected, controls: p.controls, joinedAt: p.joinedAt,
@@ -1889,8 +1931,8 @@ export class GameRoom extends DurableObject {
     return out;
   }
 
-  publicState() {
-    const g = this.g;
+  publicState(): ClientGame {
+    const g = this.g!;
     return {
       code: g.code, phase: g.phase, config: g.config,
       name: g.name, hasPassword: !!g.password,
@@ -1908,7 +1950,7 @@ export class GameRoom extends DurableObject {
   }
 
   broadcastPhase() {
-    const g = this.g;
+    const g = this.g!;
     this.broadcast({
       t: 'phase', now: Date.now(), phase: g.phase, sprint: g.sprint,
       sprintEndsAt: g.sprintEndsAt, reviewEndsAt: g.reviewEndsAt,
@@ -1921,11 +1963,11 @@ export class GameRoom extends DurableObject {
     });
   }
 
-  send(ws, msg) {
+  send(ws: WebSocket, msg: ServerMsg) {
     try { ws.send(JSON.stringify(msg)); } catch { /* socket gone */ }
   }
 
-  broadcast(msg, except = null) {
+  broadcast(msg: ServerMsg, except: WebSocket | null = null) {
     const raw = JSON.stringify(msg);
     for (const ws of this.ctx.getWebSockets()) {
       if (ws === except) continue;

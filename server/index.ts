@@ -1,10 +1,10 @@
-export { GameRoom } from './room.js';
+export { GameRoom } from './room.ts';
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPRSTUVWXYZ'; // no I/O/Q — avoids confusion
 const code4 = () =>
   Array.from({ length: 4 }, () => CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]).join('');
 
-function roomStub(env, code) {
+function roomStub(env: Env, code: string) {
   return env.ROOMS.get(env.ROOMS.idFromName(code.toUpperCase()));
 }
 
@@ -20,7 +20,7 @@ export default {
           const code = code4();
           const stub = roomStub(env, code);
           const check = await stub.fetch(new Request(`https://do/exists`));
-          const { exists } = await check.json();
+          const { exists } = await check.json<{ exists: boolean }>();
           if (exists) continue;
           await stub.fetch(new Request(`https://do/init?code=${code}`, { method: 'POST' }));
           return Response.json({ code });
@@ -46,4 +46,4 @@ export default {
 
     return env.ASSETS.fetch(request);
   },
-};
+} satisfies ExportedHandler<Env>;

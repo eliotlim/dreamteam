@@ -1,10 +1,10 @@
 import { useEffect } from 'react';
-import { useStore } from './lib/store.js';
-import { tryResume } from './lib/net.js';
-import Landing from './screens/Landing.jsx';
-import Lobby from './screens/Lobby.jsx';
-import Game from './screens/Game.jsx';
-import Retro from './screens/Retro.jsx';
+import { useStore } from './lib/store.ts';
+import { tryResume } from './lib/net.ts';
+import Landing from './screens/Landing.tsx';
+import Lobby from './screens/Lobby.tsx';
+import Game from './screens/Game.tsx';
+import Retro from './screens/Retro.tsx';
 
 export default function App() {
   const s = useStore();

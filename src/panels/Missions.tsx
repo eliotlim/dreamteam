@@ -1,16 +1,21 @@
 import { useState } from 'react';
-import { GUESS_PENALTY, MODES } from '../../shared/content.js';
-import { Card, Badge, Progress, Skeleton, Button, cx } from '../components/ui.jsx';
-import { useNow } from '../lib/hooks.js';
-import { useStore } from '../lib/store.js';
-import { guessCodeLine, shipCode, pickTriage, pickDesign, requestHint } from '../lib/net.js';
+import type { CSSProperties, ReactNode } from 'react';
+import { GUESS_PENALTY, MODES } from '../../shared/content.ts';
+import type {
+  CodeTask, DesignTask, DialTask, Incident, Quorum, TriageTask,
+} from '../../shared/types.ts';
+import { Card, Badge, Progress, Skeleton, Button, cx } from '../components/ui.tsx';
+import type { Tone } from '../components/ui.tsx';
+import { useNow } from '../lib/hooks.ts';
+import { useStore } from '../lib/store.ts';
+import { guessCodeLine, shipCode, pickTriage, pickDesign, requestHint } from '../lib/net.ts';
 
-const KIND_META = {
+const KIND_META: Record<'feature' | 'bug', { label: string; tone: Tone; icon: string }> = {
   feature: { label: 'FEATURE', tone: 'accent', icon: '✨' },
   bug: { label: 'BUG', tone: 'warn', icon: '🐛' },
 };
 
-const CODE_META = {
+const CODE_META: Record<CodeTask['codeKind'], { label: string; icon: string }> = {
   feature: { label: 'CODE · SHIP', icon: '✨' },
   service: { label: 'CODE · NEW SERVICE', icon: '🧩' },
   bug: { label: 'CODE · FIX', icon: '🐛' },
@@ -18,13 +23,15 @@ const CODE_META = {
 
 const SLOT_H = 'h-[128px]';
 
-function timeInfo(start, end, now) {
+interface TimeInfo { left: number; pct: number; urgent: boolean }
+
+function timeInfo(start: number, end: number, now: number): TimeInfo {
   const total = end - start;
   const left = end - now;
   return { left, pct: (left / total) * 100, urgent: left < total * 0.3 };
 }
 
-function TimeLeft({ left, urgent }) {
+function TimeLeft({ left, urgent }: { left: number; urgent: boolean }) {
   return (
     <span className={cx('text-xs font-bold tabular-nums w-8 text-right', urgent ? 'text-danger' : 'text-faint')}>
       {Math.max(0, Math.ceil(left / 1000))}s
@@ -34,19 +41,19 @@ function TimeLeft({ left, urgent }) {
 
 // wrong-pick feedback: briefly flags the tapped option so it can shake red
 function useWrongFlash() {
-  const [wrong, setWrong] = useState(null);
-  const flash = (i) => {
+  const [wrong, setWrong] = useState<number | null>(null);
+  const flash = (i: number) => {
     setWrong(i);
     setTimeout(() => setWrong(null), 450);
   };
-  return [wrong, flash];
+  return [wrong, flash] as const;
 }
 
-function PenaltyFooter({ t, tone, wrongGuesses }) {
+function PenaltyFooter({ t, tone, wrongGuesses }: { t: TimeInfo; tone: Tone; wrongGuesses?: number }) {
   return (
     <div className="flex items-center justify-between gap-2">
       <Progress value={t.pct} tone={t.urgent ? 'danger' : tone} className="flex-1" />
-      {wrongGuesses > 0 && (
+      {(wrongGuesses ?? 0) > 0 && (
         <span className="text-[10px] font-semibold text-danger whitespace-nowrap">
           {wrongGuesses}✗ · −{GUESS_PENALTY.secs}s each
         </span>
@@ -55,7 +62,7 @@ function PenaltyFooter({ t, tone, wrongGuesses }) {
   );
 }
 
-function QuorumDots({ quorum }) {
+function QuorumDots({ quorum }: { quorum: Quorum }) {
   return (
     <span className="inline-flex items-center gap-1" title={`${quorum.have}/${quorum.required} teammates`}>
       <span className="text-[10px] font-bold text-accent">👥 {quorum.have}/{quorum.required}</span>
@@ -68,7 +75,7 @@ function QuorumDots({ quorum }) {
   );
 }
 
-function MissionCard({ task, now }) {
+function MissionCard({ task, now }: { task: DialTask; now: number }) {
   const meta = KIND_META[task.kind];
   const t = timeInfo(task.createdAt, task.deadlineAt, now);
 
@@ -117,12 +124,12 @@ function MissionCard({ task, now }) {
 // Code review: tap away the bug (the line patches in place), then SHIP.
 // Shipping with the bug still in there crashes prod — engineers get a lens
 // that marks it, and a clean build should just be shipped as-is.
-function CodeMissionCard({ task, now, isEngineer }) {
+function CodeMissionCard({ task, now, isEngineer }: { task: CodeTask; now: number; isEngineer: boolean }) {
   const [wrong, flash] = useWrongFlash();
   const meta = CODE_META[task.codeKind] || CODE_META.feature;
   const t = timeInfo(task.createdAt, task.deadlineAt, now);
 
-  const tap = (i) => {
+  const tap = (i: number) => {
     if (task.patched || task.celebrate) return;
     guessCodeLine(task.id, i);
     if (i !== task.bugLine) flash(i);
@@ -196,11 +203,11 @@ function CodeMissionCard({ task, now, isEngineer }) {
 
 // Ticket triage — route it to the right priority. Triage is ops turf: ops
 // gets an instinct marker on the right call.
-function TriageMissionCard({ task, now, isOps }) {
+function TriageMissionCard({ task, now, isOps }: { task: TriageTask; now: number; isOps: boolean }) {
   const [wrong, flash] = useWrongFlash();
   const t = timeInfo(task.createdAt, task.deadlineAt, now);
 
-  const tap = (i) => {
+  const tap = (i: number) => {
     if (task.celebrate) return;
     pickTriage(task.id, i);
     if (i !== task.answer) flash(i);
@@ -253,7 +260,7 @@ function TriageMissionCard({ task, now, isOps }) {
   );
 }
 
-const DESIGN_META = {
+const DESIGN_META: Record<DesignTask['designKind'], { label: string }> = {
   shade: { label: 'DESIGN · COLOR' },
   centered: { label: 'DESIGN · ALIGNMENT' },
   radius: { label: 'DESIGN · RADIUS' },
@@ -261,18 +268,18 @@ const DESIGN_META = {
 
 // Design review: visual QA — match the brand swatch, spot the dead-centered
 // dot, or match the border radius. Designers get an eye marker on the answer.
-function DesignMissionCard({ task, now, isDesigner }) {
+function DesignMissionCard({ task, now, isDesigner }: { task: DesignTask; now: number; isDesigner: boolean }) {
   const [wrong, flash] = useWrongFlash();
   const meta = DESIGN_META[task.designKind] || DESIGN_META.shade;
   const t = timeInfo(task.createdAt, task.deadlineAt, now);
 
-  const tap = (i) => {
+  const tap = (i: number) => {
     if (task.celebrate) return;
     pickDesign(task.id, i);
     if (i !== task.answer) flash(i);
   };
 
-  const optionBox = (i, inner, style) => (
+  const optionBox = (i: number, inner: ReactNode, style?: CSSProperties) => (
     <button
       key={i}
       onClick={() => tap(i)}
@@ -334,7 +341,9 @@ function DesignMissionCard({ task, now, isDesigner }) {
   );
 }
 
-export function IncidentCard({ incident, now, compact = false }) {
+export function IncidentCard({ incident, now, compact = false }: {
+  incident: Incident | null; now: number; compact?: boolean;
+}) {
   if (!incident) {
     return (
       <Card className={cx('px-3.5 flex items-center gap-2 text-sm text-subtle', compact ? 'h-11' : 'h-14')}>
@@ -387,8 +396,8 @@ export function IncidentCard({ incident, now, compact = false }) {
 export default function Missions() {
   const s = useStore();
   const now = useNow(250);
-  const g = s.g;
-  const me = g.players[s.you];
+  const g = s.g!;
+  const me = s.you ? g.players[s.you] : undefined;
   const mine = g.tasks
     .filter((t) => t.displayPid === s.you)
     .sort((a, b) => a.deadlineAt - b.deadlineAt);

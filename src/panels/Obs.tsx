@@ -1,11 +1,15 @@
 import { useState } from 'react';
-import { Card, Seg, Badge, SectionLabel, cx } from '../components/ui.jsx';
-import { useAutoScroll } from '../lib/hooks.js';
-import { useStore } from '../lib/store.js';
+import type { ReactNode } from 'react';
+import type { LogLevel, MetricPoint } from '../../shared/types.ts';
+import { Card, Seg, Badge, SectionLabel, cx } from '../components/ui.tsx';
+import { useAutoScroll } from '../lib/hooks.ts';
+import { useStore } from '../lib/store.ts';
 
 // ------------------------------------------------------------- sparkline
 
-export function Sparkline({ data, className, height = 40 }) {
+export function Sparkline({ data, className, height = 40 }: {
+  data: number[]; className?: string; height?: number;
+}) {
   const W = 200, H = 40;
   if (!data.length) return <div style={{ height }} />;
   const max = Math.max(...data, 1);
@@ -25,7 +29,10 @@ export function Sparkline({ data, className, height = 40 }) {
   );
 }
 
-function MetricCard({ label, unit, values, format = (v) => v, toneFor }) {
+function MetricCard({ label, unit, values, format = (v) => v, toneFor }: {
+  label: string; unit: string; values: number[];
+  format?: (v: number) => ReactNode; toneFor?: (v: number) => string;
+}) {
   const latest = values.at(-1) ?? 0;
   const tone = toneFor ? toneFor(latest) : 'text-info';
   return (
@@ -41,10 +48,10 @@ function MetricCard({ label, unit, values, format = (v) => v, toneFor }) {
   );
 }
 
-export function MetricsGrid({ compact = false }) {
-  const { g } = useStore();
+export function MetricsGrid({ compact = false }: { compact?: boolean }) {
+  const g = useStore().g!;
   const m = g.metrics;
-  const series = (k) => m.map((p) => p[k]);
+  const series = (k: keyof MetricPoint) => m.map((p) => p[k]);
   return (
     <div className={cx('grid gap-3', compact ? 'grid-cols-2' : 'grid-cols-1 sm:grid-cols-2')}>
       <MetricCard label="Requests" unit="rps" values={series('rps')}
@@ -61,13 +68,13 @@ export function MetricsGrid({ compact = false }) {
 
 // ------------------------------------------------------------- logs
 
-const LEVEL_STYLE = {
+const LEVEL_STYLE: Record<LogLevel, string> = {
   info: 'text-subtle', warn: 'text-warn', error: 'text-danger font-semibold',
 };
 
 function Logs() {
-  const { g } = useStore();
-  const [filter, setFilter] = useState('all');
+  const g = useStore().g!;
+  const [filter, setFilter] = useState<'all' | LogLevel>('all');
   const lines = g.logs.filter((l) => filter === 'all' || l.level === filter);
   const ref = useAutoScroll(g.logs.length);
   return (
@@ -91,14 +98,14 @@ function Logs() {
 
 // ------------------------------------------------------------- traces
 
-const SVC_COLORS = {
+const SVC_COLORS: Record<string, string> = {
   cdn: 'bg-sky-400', lb: 'bg-indigo-400', frontend: 'bg-purple-400',
   backend: 'bg-blue-500', db: 'bg-emerald-500', cache: 'bg-teal-400',
   queue: 'bg-amber-400', payments: 'bg-pink-400',
 };
 
 function Traces() {
-  const { g } = useStore();
+  const g = useStore().g!;
   const traces = [...g.traces].reverse();
   return (
     <div className="space-y-2 overflow-y-auto h-full min-h-0 pr-1">
@@ -138,7 +145,7 @@ function Traces() {
 // ------------------------------------------------------------- panel
 
 export default function Obs() {
-  const [tab, setTab] = useState('metrics');
+  const [tab, setTab] = useState<'metrics' | 'logs' | 'traces'>('metrics');
   return (
     <div className="flex flex-col h-full min-h-0 gap-3">
       <Seg value={tab} onChange={setTab} size="sm"

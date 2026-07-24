@@ -1,29 +1,43 @@
 import { useSyncExternalStore } from 'react';
+import type { ClientGame, ServerMsg } from '../../shared/types.ts';
 
 // Single external store. Server messages mutate `state.g`, then emit() swaps
 // the top-level reference so useSyncExternalStore re-renders subscribers.
 
-let state = {
-  status: 'idle', // idle | connecting | connected | reconnecting | error
+export type ConnStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error';
+
+export interface StoreState {
+  status: ConnStatus;
+  error: string | null;
+  code: string | null;
+  you: string | null;
+  /** serverNow - clientNow */
+  clockOffset: number;
+  /** mirrored game state from the server */
+  g: ClientGame | null;
+}
+
+let state: StoreState = {
+  status: 'idle',
   error: null,
   code: null,
   you: null,
-  clockOffset: 0, // serverNow - clientNow
-  g: null,        // mirrored game state from the server
+  clockOffset: 0,
+  g: null,
 };
 
-const listeners = new Set();
+const listeners = new Set<() => void>();
 
 export const getState = () => state;
 export const serverNow = () => Date.now() + state.clockOffset;
 
 function emit() {
   state = { ...state };
-  if (import.meta.env.DEV) window.__dt = state;
+  if (import.meta.env.DEV) (window as Window & { __dt?: StoreState }).__dt = state;
   for (const fn of listeners) fn();
 }
 
-export function useStore() {
+export function useStore(): StoreState {
   return useSyncExternalStore(
     (fn) => (listeners.add(fn), () => listeners.delete(fn)),
     getState,
@@ -31,14 +45,14 @@ export function useStore() {
   );
 }
 
-export function patch(partial) {
+export function patch(partial: Partial<StoreState>) {
   Object.assign(state, partial);
   emit();
 }
 
-const cap = (arr, n) => { while (arr.length > n) arr.shift(); };
+const cap = (arr: unknown[], n: number) => { while (arr.length > n) arr.shift(); };
 
-export function handleMessage(msg) {
+export function handleMessage(msg: ServerMsg) {
   const g = state.g;
   switch (msg.t) {
     case 'snapshot':

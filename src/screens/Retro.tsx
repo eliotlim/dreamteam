@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react';
-import { Card, Button, Stat, ThemeToggle, SectionLabel, cx } from '../components/ui.jsx';
-import { restartGame } from '../lib/net.js';
-import { useStore } from '../lib/store.js';
+import type { ReactNode } from 'react';
+import type { AnalysisItem, GameEvent } from '../../shared/types.ts';
+import { Card, Button, Stat, ThemeToggle, SectionLabel, cx } from '../components/ui.tsx';
+import { restartGame } from '../lib/net.ts';
+import { useStore } from '../lib/store.ts';
 
 // the little end-of-game moment: the score ticks up while sections rise in
-function useCountUp(target, { duration = 1200, delay = 400 } = {}) {
+function useCountUp(target: number, { duration = 1200, delay = 400 } = {}) {
   const [v, setV] = useState(0);
   useEffect(() => {
-    let raf;
+    let raf: number;
     const t0 = performance.now() + delay;
-    const step = (t) => {
+    const step = (t: number) => {
       const p = Math.max(0, Math.min(1, (t - t0) / duration));
       setV(Math.round(target * (1 - (1 - p) ** 3)));
       if (p < 1) raf = requestAnimationFrame(step);
@@ -21,11 +23,11 @@ function useCountUp(target, { duration = 1200, delay = 400 } = {}) {
 }
 
 // staggered entrance wrapper — everything stays scrollable underneath
-function Rise({ delay, children }) {
+function Rise({ delay, children }: { delay: number; children?: ReactNode }) {
   return <div className="animate-rise" style={{ animationDelay: `${delay}s` }}>{children}</div>;
 }
 
-const EV_META = {
+const EV_META: Record<string, { icon: string; bar: string }> = {
   sprint:      { icon: '🏁', bar: 'bg-line-strong' },
   ship:        { icon: '🚀', bar: 'bg-accent' },
   deploy:      { icon: '🧩', bar: 'bg-accent/70' },
@@ -42,7 +44,7 @@ const EV_META = {
 // The whole game as a Gantt: every notable event is a bar on a shared time
 // axis, and events that caused other events nest under them (↳). Sprints
 // render as section breaks.
-function Gantt({ events }) {
+function Gantt({ events }: { events: GameEvent[] | null }) {
   if (!events?.length) return null;
   const t0 = Math.min(...events.map((e) => e.ts));
   const t1 = Math.max(...events.map((e) => e.end ?? e.ts));
@@ -50,14 +52,14 @@ function Gantt({ events }) {
 
   // roots in time order, each followed by its consequences (depth-first)
   const byId = Object.fromEntries(events.map((e) => [e.id, e]));
-  const kids = {};
-  const roots = [];
+  const kids: Record<string, GameEvent[]> = {};
+  const roots: GameEvent[] = [];
   for (const e of events) {
     if (e.cause && byId[e.cause]) (kids[e.cause] ??= []).push(e);
     else roots.push(e);
   }
-  const rows = [];
-  const walk = (e, depth) => {
+  const rows: { e: GameEvent; depth: number }[] = [];
+  const walk = (e: GameEvent, depth: number) => {
     rows.push({ e, depth });
     for (const k of (kids[e.id] || []).sort((a, b) => a.ts - b.ts)) walk(k, depth + 1);
   };
@@ -114,7 +116,7 @@ function Gantt({ events }) {
   );
 }
 
-function Analysis({ items }) {
+function Analysis({ items }: { items: AnalysisItem[] | null }) {
   if (!items?.length) return null;
   return (
     <Card className="p-4 sm:p-5 space-y-4">
@@ -134,8 +136,8 @@ function Analysis({ items }) {
 
 export default function Retro() {
   const s = useStore();
-  const g = s.g;
-  const me = g.players[s.you];
+  const g = s.g!;
+  const me = s.you ? g.players[s.you] : undefined;
   const st = g.stats;
   const score = useCountUp(g.score);
 

@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Button, Card, Input, ThemeToggle, SectionLabel } from '../components/ui.jsx';
-import { createRoom, roomInfo, connect } from '../lib/net.js';
-import { useStore } from '../lib/store.js';
+import { Button, Card, Input, ThemeToggle, SectionLabel } from '../components/ui.tsx';
+import { createRoom, roomInfo, connect } from '../lib/net.ts';
+import { useStore } from '../lib/store.ts';
 
 export default function Landing() {
   const s = useStore();
@@ -10,7 +10,7 @@ export default function Landing() {
   const [pass, setPass] = useState('');
   const [needPass, setNeedPass] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState(null);
+  const [err, setErr] = useState<string | null>(null);
 
   const saveName = () => {
     const n = name.trim();
@@ -34,7 +34,7 @@ export default function Landing() {
     const c = code.trim().toUpperCase();
     if (c.length !== 4) { setErr('Room codes are 4 letters.'); return; }
     setBusy(true); setErr(null);
-    const info = await roomInfo(c, pass).catch(() => ({ exists: false }));
+    const info = await roomInfo(c, pass).catch((): { exists: boolean } & Partial<Awaited<ReturnType<typeof roomInfo>>> => ({ exists: false }));
     if (!info.exists) {
       setErr(`Room ${c} doesn't exist.`);
       setBusy(false);

@@ -6,9 +6,10 @@
   "packageManager": "pnpm@9.15.9",
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.worker.json",
+    "build": "pnpm typecheck && vite build",
     "preview": "vite preview",
-    "deploy": "vite build && wrangler deploy"
+    "deploy": "pnpm build && wrangler deploy"
   },
   "repository": {
     "type": "git",
@@ -25,8 +26,12 @@
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.47.0",
     "@tailwindcss/vite": "^4.1.11",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.6.0",
     "tailwindcss": "^4.1.11",
+    "typescript": "^7.0.2",
     "vite": "^7.0.0",
     "wrangler": "^4.114.0"
   }

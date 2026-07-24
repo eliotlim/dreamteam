@@ -1,11 +1,19 @@
-import { handleMessage, patch, getState } from './store.js';
+import type { ClientMsg, GameConfig, IncidentKind, PlayerRole } from '../../shared/types.ts';
+import { handleMessage, patch } from './store.ts';
 
-let ws = null;
-let retryTimer = null;
+let ws: WebSocket | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let retries = 0;
 let manualClose = false;
 
-export function playerId() {
+export interface RoomInfo {
+  exists: boolean;
+  phase?: string | null;
+  hasPassword?: boolean;
+  passOk?: boolean;
+}
+
+export function playerId(): string {
   let pid = localStorage.getItem('dt-pid');
   if (!pid) {
     pid = crypto.randomUUID().slice(0, 8);
@@ -14,22 +22,22 @@ export function playerId() {
   return pid;
 }
 
-export async function createRoom() {
+export async function createRoom(): Promise<string> {
   const res = await fetch('/api/rooms', { method: 'POST' });
   if (!res.ok) throw new Error('could not create room');
-  const { code } = await res.json();
+  const { code } = (await res.json()) as { code: string };
   return code;
 }
 
 // Existence + password pre-check: { exists, phase, hasPassword, passOk }
-export async function roomInfo(code, pass = '') {
+export async function roomInfo(code: string, pass = ''): Promise<RoomInfo> {
   const q = pass ? `?pass=${encodeURIComponent(pass)}` : '';
   const res = await fetch(`/api/rooms/${encodeURIComponent(code)}${q}`);
   if (!res.ok) return { exists: false };
-  return res.json();
+  return res.json() as Promise<RoomInfo>;
 }
 
-export function connect(code, name, pass = '') {
+export function connect(code: string, name: string, pass = '') {
   manualClose = false;
   clearTimeout(retryTimer);
   localStorage.setItem('dt-room', code);
@@ -79,24 +87,28 @@ export function tryResume() {
   return false;
 }
 
-export function send(msg) {
+export function send(msg: ClientMsg) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
-export const sendChat = (text) => send({ t: 'chat', text });
-export const setControl = (key, value) => send({ t: 'control', key, value });
-export const pressButton = (key) => send({ t: 'control', key, press: true });
-export const guessCodeLine = (taskId, line) => send({ t: 'code_guess', taskId, line });
-export const shipCode = (taskId) => send({ t: 'code_ship', taskId });
-export const pickTriage = (taskId, choice) => send({ t: 'triage_pick', taskId, choice });
-export const pickDesign = (taskId, choice) => send({ t: 'design_pick', taskId, choice });
+export type ConfigPatch = Omit<Partial<GameConfig>, 'incidents'> & {
+  incidents?: Partial<Record<IncidentKind, boolean>>;
+};
+
+export const sendChat = (text: string) => send({ t: 'chat', text });
+export const setControl = (key: string, value: number) => send({ t: 'control', key, value });
+export const pressButton = (key: string) => send({ t: 'control', key, press: true });
+export const guessCodeLine = (taskId: string, line: number) => send({ t: 'code_guess', taskId, line });
+export const shipCode = (taskId: string) => send({ t: 'code_ship', taskId });
+export const pickTriage = (taskId: string, choice: number) => send({ t: 'triage_pick', taskId, choice });
+export const pickDesign = (taskId: string, choice: number) => send({ t: 'design_pick', taskId, choice });
 export const requestHint = () => send({ t: 'hint' });
-export const setRole = (role) => send({ t: 'set_role', role });
-export const renameSelf = (name) => send({ t: 'rename', name });
-export const setRoomName = (name) => send({ t: 'set_name', name });
-export const setPassword = (password) => send({ t: 'set_password', password });
-export const makeHost = (pid) => send({ t: 'make_host', pid });
-export const setConfig = (p) => send({ t: 'config', patch: p });
+export const setRole = (role: PlayerRole) => send({ t: 'set_role', role });
+export const renameSelf = (name: string) => send({ t: 'rename', name });
+export const setRoomName = (name: string) => send({ t: 'set_name', name });
+export const setPassword = (password: string) => send({ t: 'set_password', password });
+export const makeHost = (pid: string) => send({ t: 'make_host', pid });
+export const setConfig = (p: ConfigPatch) => send({ t: 'config', patch: p });
 export const startGame = () => send({ t: 'start' });
 export const nextSprint = () => send({ t: 'next_sprint' });
 export const restartGame = () => send({ t: 'restart' });

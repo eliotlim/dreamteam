@@ -1,20 +1,27 @@
 import { useMemo, useState } from 'react';
 import { ReactFlow, Background, Handle, Position } from '@xyflow/react';
+import type { Node, NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { SERVICES, SERVICE_EDGES, SERVICE_CONTROLS } from '../../shared/content.js';
-import { Card, Badge, cx } from '../components/ui.jsx';
-import { useStore } from '../lib/store.js';
-import { IncidentCard } from './Missions.jsx';
-import { ControlWidget } from './Controls.jsx';
-import { useNow } from '../lib/hooks.js';
+import { SERVICES, SERVICE_EDGES, SERVICE_CONTROLS } from '../../shared/content.ts';
+import type { NodeStatus } from '../../shared/types.ts';
+import { Card, Badge, cx } from '../components/ui.tsx';
+import { useStore } from '../lib/store.ts';
+import { IncidentCard } from './Missions.tsx';
+import { ControlWidget } from './Controls.tsx';
+import { useNow } from '../lib/hooks.ts';
 
-const STATUS_STYLE = {
+const STATUS_STYLE: Record<NodeStatus, { dot: string; border: string }> = {
   ok:       { dot: 'bg-ok',     border: 'border-line' },
   degraded: { dot: 'bg-warn animate-pulse',   border: 'border-warn' },
   down:     { dot: 'bg-danger animate-pulse', border: 'border-danger' },
 };
 
-function ServiceNode({ data }) {
+type ServiceFlowNode = Node<{
+  label: string; icon: string; status: NodeStatus;
+  stat?: string; selected: boolean; mine: number;
+}, 'service'>;
+
+function ServiceNode({ data }: NodeProps<ServiceFlowNode>) {
   const st = STATUS_STYLE[data.status] || STATUS_STYLE.ok;
   return (
     <div
@@ -47,15 +54,17 @@ const TIER_X = [0, 210, 420, 640];
 
 // Click a node → live detail stats + every control that operates this
 // service: yours render as working widgets, the rest name who to shout at.
-function NodeInspector({ id, onClose }) {
+function NodeInspector({ id, onClose }: { id: string; onClose: () => void }) {
   const s = useStore();
-  const g = s.g;
-  const me = g.players[s.you];
+  const g = s.g!;
+  const me = s.you ? g.players[s.you] : undefined;
   const def = SERVICES[id];
-  const node = g.nodes?.[id] || {};
+  const node = g.nodes?.[id];
   const keys = SERVICE_CONTROLS[id] || [];
 
-  const myControls = keys.map((k) => me?.controls?.find((c) => c.key === k)).filter(Boolean);
+  const myControls = keys
+    .map((k) => me?.controls?.find((c) => c.key === k))
+    .filter((c): c is NonNullable<typeof c> => !!c);
   const heldElsewhere = keys
     .filter((k) => !me?.controls?.some((c) => c.key === k))
     .map((k) => {
@@ -63,23 +72,23 @@ function NodeInspector({ id, onClose }) {
         (p) => p.connected && p.id !== s.you && p.controls?.some((c) => c.key === k),
       );
       if (!holders.length) return null;
-      return { key: k, label: holders[0].controls.find((c) => c.key === k).label, names: holders.map((h) => h.name) };
+      return { key: k, label: holders[0].controls.find((c) => c.key === k)!.label, names: holders.map((h) => h.name) };
     })
-    .filter(Boolean);
+    .filter((x): x is NonNullable<typeof x> => !!x);
 
   return (
     <Card className="p-3.5 space-y-3 animate-pop shrink-0">
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold text-sm">{def.icon} {def.label}</span>
         <span className="flex items-center gap-2">
-          <Badge tone={node.s === 'down' ? 'danger' : node.s === 'degraded' ? 'warn' : 'ok'}>
-            {node.s || 'ok'}
+          <Badge tone={node?.s === 'down' ? 'danger' : node?.s === 'degraded' ? 'warn' : 'ok'}>
+            {node?.s || 'ok'}
           </Badge>
           <button className="text-subtle hover:text-ink text-sm cursor-pointer px-1" onClick={onClose} title="close">✕</button>
         </span>
       </div>
 
-      {node.d?.length > 0 && (
+      {node && node.d.length > 0 && (
         <div className="flex flex-wrap gap-x-6 gap-y-1">
           {node.d.map(([label, value]) => (
             <div key={label} className="flex items-baseline gap-1.5 text-xs min-w-0">
@@ -113,18 +122,18 @@ function NodeInspector({ id, onClose }) {
   );
 }
 
-export default function Infra({ full = false }) {
+export default function Infra({ full = false }: { full?: boolean }) {
   const s = useStore();
-  const { g } = s;
+  const g = s.g!;
   const now = useNow(500);
-  const [sel, setSel] = useState(null);
+  const [sel, setSel] = useState<string | null>(null);
   const services = g.services || [];
   const nodes = g.nodes || {};
-  const me = g.players[s.you];
+  const me = s.you ? g.players[s.you] : undefined;
   const selected = sel && services.includes(sel) ? sel : null;
 
-  const flowNodes = useMemo(() => {
-    const byTier = {};
+  const flowNodes = useMemo<ServiceFlowNode[]>(() => {
+    const byTier: Record<number, number> = {};
     return services.map((id) => {
       const def = SERVICES[id];
       const tierIdx = (byTier[def.tier] = (byTier[def.tier] ?? -1) + 1);
@@ -133,7 +142,7 @@ export default function Infra({ full = false }) {
       ).length;
       return {
         id,
-        type: 'service',
+        type: 'service' as const,
         position: { x: TIER_X[def.tier], y: tierIdx * 92 + (def.tier === 2 ? 46 : 0) },
         data: {
           label: def.label, icon: def.icon,

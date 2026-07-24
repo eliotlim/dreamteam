@@ -1,12 +1,16 @@
 import { useState } from 'react';
-import { CONTROL_SERVICE } from '../../shared/content.js';
-import { Card, Switch, Seg, Button, SectionLabel, cx } from '../components/ui.jsx';
-import { setControl, pressButton } from '../lib/net.js';
-import { useStore } from '../lib/store.js';
+import type { ComponentType } from 'react';
+import { CONTROL_SERVICE } from '../../shared/content.ts';
+import type { ControlInstance, ControlType } from '../../shared/types.ts';
+import { Card, Switch, Seg, Button, SectionLabel, cx } from '../components/ui.tsx';
+import { setControl, pressButton } from '../lib/net.ts';
+import { useStore } from '../lib/store.ts';
 
 // Every widget row has a fixed height so the console never shifts layout.
 
-function ToggleControl({ c }) {
+interface WidgetProps { c: ControlInstance }
+
+function ToggleControl({ c }: WidgetProps) {
   return (
     <div className="h-12 flex items-center justify-between gap-3">
       <span className="text-sm font-medium truncate">{c.label}</span>
@@ -20,8 +24,8 @@ function ToggleControl({ c }) {
   );
 }
 
-function SliderControl({ c }) {
-  const [local, setLocal] = useState(null);
+function SliderControl({ c }: WidgetProps) {
+  const [local, setLocal] = useState<number | null>(null);
   const shown = local ?? c.value;
   const min = c.min ?? 0;
   const commit = () => { if (local != null) { setControl(c.key, local); setLocal(null); } };
@@ -45,13 +49,13 @@ function SliderControl({ c }) {
   );
 }
 
-function SelectControl({ c }) {
+function SelectControl({ c }: WidgetProps) {
   return (
     <div className="h-[76px] flex flex-col justify-center gap-1.5">
       <span className="text-sm font-medium block truncate">{c.label}</span>
       <Seg
         size="sm"
-        options={c.options.map((o, i) => ({ value: i, label: o }))}
+        options={(c.options ?? []).map((o, i) => ({ value: i, label: o }))}
         value={c.value}
         onChange={(v) => setControl(c.key, v)}
         className="overflow-x-auto"
@@ -60,7 +64,7 @@ function SelectControl({ c }) {
   );
 }
 
-function ButtonControl({ c }) {
+function ButtonControl({ c }: WidgetProps) {
   const [flash, setFlash] = useState(false);
   return (
     <div className="h-14 flex items-center">
@@ -79,15 +83,17 @@ function ButtonControl({ c }) {
   );
 }
 
-const WIDGET = { toggle: ToggleControl, slider: SliderControl, select: SelectControl, button: ButtonControl };
+const WIDGET: Record<ControlType, ComponentType<WidgetProps>> = {
+  toggle: ToggleControl, slider: SliderControl, select: SelectControl, button: ButtonControl,
+};
 
 // Single control widget by type — also used by the infra node inspector.
-export function ControlWidget({ c }) {
+export function ControlWidget({ c }: WidgetProps) {
   const W = WIDGET[c.type];
   return W ? <W c={c} /> : null;
 }
 
-function Group({ label, controls }) {
+function Group({ label, controls }: { label: string; controls: ControlInstance[] }) {
   if (!controls.length) return null;
   return (
     <div>
@@ -102,10 +108,10 @@ function Group({ label, controls }) {
   );
 }
 
-export default function Controls({ flat = false }) {
+export default function Controls({ flat = false }: { flat?: boolean }) {
   const s = useStore();
-  const g = s.g;
-  const me = g.players[s.you];
+  const g = s.g!;
+  const me = s.you ? g.players[s.you] : undefined;
   if (!me || me.role === 'spectator' || !me.controls?.length) return null;
 
   // Arcade: the whole console lives on the dashboard. Assisted/realism: infra
@@ -114,7 +120,7 @@ export default function Controls({ flat = false }) {
   // isn't deployed yet (it has no node to live on). `flat` (mobile) forces
   // the arcade layout: diagrams are for looking at, not for tapping through.
   const arcade = flat || g.config.mode === 'arcade';
-  const onMap = (c) => CONTROL_SERVICE[c.key] && g.services.includes(CONTROL_SERVICE[c.key]);
+  const onMap = (c: ControlInstance) => CONTROL_SERVICE[c.key] && g.services.includes(CONTROL_SERVICE[c.key]);
   const ops = me.controls.filter((c) => c.crit && (arcade || !onMap(c)));
   const dials = me.controls.filter((c) => !c.crit);
   const movedToMap = !arcade && me.controls.some((c) => c.crit && onMap(c));

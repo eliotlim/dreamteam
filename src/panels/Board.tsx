@@ -1,10 +1,11 @@
-import { Badge, Avatar, Progress, SectionLabel, cx } from '../components/ui.jsx';
-import { useNow } from '../lib/hooks.js';
-import { useStore } from '../lib/store.js';
+import type { ReactNode } from 'react';
+import { Badge, Avatar, Progress, SectionLabel, cx } from '../components/ui.tsx';
+import { useNow } from '../lib/hooks.ts';
+import { useStore } from '../lib/store.ts';
 
-const KIND_ICON = { feature: '✨', bug: '🐛', incident: '🚨', code: '👨‍💻', triage: '📥', design: '🎨' };
+const KIND_ICON: Record<string, string> = { feature: '✨', bug: '🐛', incident: '🚨', code: '👨‍💻', triage: '📥', design: '🎨' };
 
-function BoardCard({ children, className }) {
+function BoardCard({ children, className }: { children?: ReactNode; className?: string }) {
   return (
     <div className={cx('bg-surface border border-line rounded-xl p-2.5 text-xs space-y-1.5', className)}>
       {children}
@@ -12,7 +13,7 @@ function BoardCard({ children, className }) {
   );
 }
 
-function Column({ title, count, children }) {
+function Column({ title, count, children }: { title: ReactNode; count: number; children?: ReactNode }) {
   return (
     <div className="flex flex-col gap-2 min-w-0">
       <div className="flex items-center gap-2 px-1">
@@ -27,7 +28,7 @@ function Column({ title, count, children }) {
 export default function Board() {
   const s = useStore();
   const now = useNow(500);
-  const g = s.g;
+  const g = s.g!;
   const players = g.players;
 
   // celebrating ghosts are already in doneLog — don't double-list them

@@ -1,17 +1,17 @@
 import { useState } from 'react';
-import { Avatar, Input, Button, cx } from '../components/ui.jsx';
-import { sendChat } from '../lib/net.js';
-import { useAutoScroll } from '../lib/hooks.js';
-import { useStore } from '../lib/store.js';
+import { Avatar, Input, Button, cx } from '../components/ui.tsx';
+import { sendChat } from '../lib/net.ts';
+import { useAutoScroll } from '../lib/hooks.ts';
+import { useStore } from '../lib/store.ts';
 
-function timeShort(ts) {
+function timeShort(ts: number) {
   const d = new Date(ts);
   return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-export default function Chat({ readOnly = false }) {
+export default function Chat({ readOnly = false }: { readOnly?: boolean }) {
   const s = useStore();
-  const g = s.g;
+  const g = s.g!;
   const [text, setText] = useState('');
   const scrollRef = useAutoScroll(g.chat.length);
 

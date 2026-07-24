@@ -79,8 +79,19 @@ html, body, #root {
   height: 100%;
 }
 
+/* The app owns scrolling: the body never scrolls, #root is the single
+   scroller. In-game screens are exactly viewport-sized (h-full +
+   overflow-hidden) with their own inner scroll panes, so the header and
+   footer stay pinned; taller screens (lobby, retro) scroll inside #root.
+   overscroll-behavior stops touch scrolls from rubber-banding the page. */
 body {
   @apply bg-canvas text-ink font-sans antialiased;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+#root {
+  overflow-y: auto;
 }
 
 * {

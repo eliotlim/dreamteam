@@ -103,6 +103,10 @@ export interface GameConfig {
   incidentEverySec: number;
   incidentDeadlineSec: number;
   maxActivePerPlayer: number;
+  /** spawn-rate multiplier added per extra player (0 = fixed pace) */
+  taskScalePerPlayer: number;
+  /** min seconds between tasks landing on the same screen */
+  taskCooldownSec: number;
   bugChance: number;
   missPenalty: number;
   incidentDrainPerSec: number;
@@ -131,6 +135,8 @@ export interface Player {
   controls: ControlInstance[];
   /** server-only: how many dial-mission location hints this screen has seen */
   dialHints?: number;
+  /** server-only: when a task last landed on this screen (breather cooldown) */
+  lastTaskAt?: number;
 }
 
 // ---------------------------------------------------------------- tasks
@@ -289,6 +295,8 @@ export interface BacklogItem { title: string; service?: string }
 interface GameCore {
   code: string;
   phase: Phase;
+  /** trial-run practice sprint: no incidents, no penalties, guided tips */
+  tutorial: boolean;
   name: string;
   config: GameConfig;
   players: Record<string, Player>;
@@ -346,8 +354,10 @@ export type ClientMsg =
   | { t: 'leave' }
   | { t: 'config'; patch: Omit<Partial<GameConfig>, 'incidents'> & { incidents?: Partial<Record<IncidentKind, boolean>> } }
   | { t: 'start' }
+  | { t: 'tutorial' }
   | { t: 'next_sprint' }
   | { t: 'restart' }
+  | { t: 'reassign'; taskId: string; pid: string }
   | { t: 'control'; key: string; value?: number; press?: boolean }
   | { t: 'code_guess'; taskId: string; line: number }
   | { t: 'code_ship'; taskId: string }
@@ -365,6 +375,7 @@ export type ServerMsg =
   | { t: 'room'; name?: string; hasPassword?: boolean }
   | {
       t: 'phase'; now: number; phase: Phase; sprint: number;
+      tutorial?: boolean;
       sprintEndsAt: number; reviewEndsAt: number;
       score: number; health: number; victory: boolean;
       stats: GameStats; sprintStats: SprintStats | null;

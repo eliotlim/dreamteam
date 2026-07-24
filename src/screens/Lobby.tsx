@@ -6,7 +6,7 @@ import {
   Button, Card, Badge, Avatar, Switch, Seg, ThemeToggle, SectionLabel, Dot, Input, cx,
 } from '../components/ui.tsx';
 import {
-  setRole, setConfig, startGame, renameSelf, setRoomName, setPassword, makeHost, leaveTeam,
+  setRole, setConfig, startGame, startTutorial, renameSelf, setRoomName, setPassword, makeHost, leaveTeam,
 } from '../lib/net.ts';
 import { useStore } from '../lib/store.ts';
 
@@ -267,9 +267,14 @@ export default function Lobby() {
           </Card>
 
           {isHost ? (
-            <Button size="lg" className="w-full" onClick={startGame} disabled={activeCount === 0}>
-              Start sprint 1 →
-            </Button>
+            <div className="space-y-2">
+              <Button size="lg" className="w-full" onClick={startGame} disabled={activeCount === 0}>
+                Start sprint 1 →
+              </Button>
+              <Button variant="outline" className="w-full" onClick={startTutorial} disabled={activeCount === 0}>
+                🎓 Trial run — 90s guided practice, no penalties
+              </Button>
+            </div>
           ) : (
             <div className="text-center text-subtle text-sm py-3 flex items-center justify-center gap-2">
               <Dot tone="accent" pulse /> waiting for the host to start…
@@ -357,6 +362,10 @@ export default function Lobby() {
                     onChange={(v) => setConfig({ controlsPerPlayer: v })} />
                   <NumberSetting label="Max tasks per player" value={cfg.maxActivePerPlayer} min={1} max={4}
                     onChange={(v) => setConfig({ maxActivePerPlayer: v })} />
+                  <NumberSetting label="Pace per extra player" value={cfg.taskScalePerPlayer ?? 0.5} min={0} max={1} step={0.05} suffix="×"
+                    onChange={(v) => setConfig({ taskScalePerPlayer: v })} />
+                  <NumberSetting label="Breather cooldown" value={cfg.taskCooldownSec ?? 5} min={0} max={20} suffix="s"
+                    onChange={(v) => setConfig({ taskCooldownSec: v })} />
                   <NumberSetting label="Bug ratio" value={cfg.bugChance} min={0} max={1} step={0.05}
                     onChange={(v) => setConfig({ bugChance: v })} />
                   <NumberSetting label="Code review ratio" value={cfg.codeChance} min={0} max={0.6} step={0.05}

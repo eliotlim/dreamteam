@@ -118,5 +118,7 @@ export const setPassword = (password: string) => send({ t: 'set_password', passw
 export const makeHost = (pid: string) => send({ t: 'make_host', pid });
 export const setConfig = (p: ConfigPatch) => send({ t: 'config', patch: p });
 export const startGame = () => send({ t: 'start' });
+export const startTutorial = () => send({ t: 'tutorial' });
+export const reassignTask = (taskId: string, pid: string) => send({ t: 'reassign', taskId, pid });
 export const nextSprint = () => send({ t: 'next_sprint' });
 export const restartGame = () => send({ t: 'restart' });

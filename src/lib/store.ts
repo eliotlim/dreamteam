@@ -79,7 +79,8 @@ export function handleMessage(msg: ServerMsg) {
     case 'phase':
       if (!g) break;
       Object.assign(g, {
-        phase: msg.phase, sprint: msg.sprint, sprintEndsAt: msg.sprintEndsAt,
+        phase: msg.phase, sprint: msg.sprint, tutorial: msg.tutorial ?? g.tutorial,
+        sprintEndsAt: msg.sprintEndsAt,
         reviewEndsAt: msg.reviewEndsAt, score: msg.score, health: msg.health,
         victory: msg.victory, stats: msg.stats, sprintStats: msg.sprintStats,
         players: msg.players, backlog: msg.backlog,

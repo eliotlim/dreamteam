@@ -23,6 +23,22 @@ const ROOM_TTL_MS = 30 * 60 * 1000;
 // a player with no socket for this long leaves the party for real
 const PLAYER_TTL_MS = 60 * 1000;
 
+// Tutorial trial run: one short guided sprint — relaxed pacing, generous
+// deadlines, no incidents, no penalties — then straight back to the lobby.
+const TUTORIAL = {
+  sprintSeconds: 90,
+  taskEverySec: 12,
+  cooldownSec: 8,
+  deadlineMult: 1.6,
+};
+
+// chat tips dripped during the trial run, keyed by sprint-relative tick
+const TUTORIAL_TIPS: [number, string][] = [
+  [8, '🎓 Tip: mission cards land on your Console. Do exactly what the card says — tap, slide, or ship.'],
+  [30, '🎓 Tip: if a card names a dial that is not on your console, a teammate has it. Say the instruction out loud!'],
+  [55, '🎓 Tip: the 📌 Board shows the whole team\'s work, and 🔭 Observe shows the system\'s health. The PM can reassign tasks from the Board.'],
+];
+
 // Deterministic starting values for the ops console — the sim needs a sane
 // initial state (3 pods, warm-ish cache, moderate drain, nothing to zero).
 const CRITICAL_INIT = {
@@ -47,6 +63,8 @@ export const DEFAULT_CONFIG: GameConfig = {
   incidentEverySec: 45,
   incidentDeadlineSec: 60,
   maxActivePerPlayer: 2,
+  taskScalePerPlayer: 0.5,
+  taskCooldownSec: 5,
   bugChance: 0.3,
   missPenalty: 8,
   incidentDrainPerSec: 0.5,
@@ -62,6 +80,7 @@ export const PRESETS: Record<PresetId, Partial<GameConfig> & { startingServices:
     taskEverySec: 12, taskDeadlineSec: 45, incidentEverySec: 75,
     incidentDeadlineSec: 90, missPenalty: 5, incidentDrainPerSec: 0.25,
     sprintSeconds: 120, difficultyRamp: 0.15, spikeMult: 3,
+    taskScalePerPlayer: 0.4, taskCooldownSec: 8,
     startingServices: [],
   },
   standard: { startingServices: ['cache', 'queue'] },
@@ -69,6 +88,7 @@ export const PRESETS: Record<PresetId, Partial<GameConfig> & { startingServices:
     taskEverySec: 5, taskDeadlineSec: 22, incidentEverySec: 30,
     incidentDeadlineSec: 45, missPenalty: 10, incidentDrainPerSec: 0.8,
     sprintSeconds: 180, difficultyRamp: 0.35, spikeMult: 5,
+    taskScalePerPlayer: 0.6, taskCooldownSec: 3,
     startingServices: ['cache', 'queue', 'payments'],
   },
 };
@@ -111,6 +131,7 @@ function freshState(code: string): GameState {
     createdAt: Date.now(),
     lastActiveAt: Date.now(),
     phase: 'lobby',
+    tutorial: false,
     name: '',
     password: null,
     creatorPid: null,
@@ -173,6 +194,9 @@ export class GameRoom extends DurableObject<Env> {
         this.g!.lastActiveAt ??= Date.now();
         this.g!.config.megaMode ??= false;
         this.g!.config.hintsEnabled ??= true;
+        this.g!.config.taskScalePerPlayer ??= DEFAULT_CONFIG.taskScalePerPlayer;
+        this.g!.config.taskCooldownSec ??= DEFAULT_CONFIG.taskCooldownSec;
+        this.g!.tutorial ??= false;
         this.g!.usedSnippets ??= [];
         this.g!.usedTickets ??= [];
         this.g!.stats ??= freshStats();
@@ -455,6 +479,33 @@ export class GameRoom extends DurableObject<Env> {
         this.startGame();
         break;
       }
+      case 'tutorial': {
+        if (!p.isHost || g.phase !== 'lobby') break;
+        g.tutorial = true;
+        this.startGame();
+        break;
+      }
+      case 'reassign': {
+        // PM superpower (host as fallback): move a live task to another screen
+        if (g.phase !== 'playing') break;
+        if (p.role !== 'pm' && !p.isHost) break;
+        const task = g.tasks.find((t) => t.id === msg.taskId);
+        const target = g.players[msg.pid];
+        if (!task || task.status !== 'active' || !target || !target.connected
+          || target.role === 'spectator' || task.displayPid === target.id) break;
+        task.displayPid = target.id;
+        // dial missions stay owned by whoever holds the dial — only the card
+        // moves; quiz-style tasks are answered on the screen they land on
+        if (!isDialTask(task)) {
+          task.ownerPid = target.id;
+          task.ownerName = target.name;
+        }
+        target.lastTaskAt = Date.now(); // they just got work — give them air
+        this.botSay('system', `📌 ${p.name} reassigned "${task.title}" to ${target.name}`);
+        this.persist();
+        this.broadcast({ t: 'task', task });
+        break;
+      }
       case 'next_sprint': {
         if (!p.isHost || g.phase !== 'review') break;
         this.startSprint(g.sprint + 1);
@@ -544,6 +595,8 @@ export class GameRoom extends DurableObject<Env> {
     num('incidentEverySec', 15, 300);
     num('incidentDeadlineSec', 20, 180);
     num('maxActivePerPlayer', 1, 4);
+    num('taskScalePerPlayer', 0, 1);
+    num('taskCooldownSec', 0, 30);
     num('bugChance', 0, 1);
     num('missPenalty', 0, 25);
     num('incidentDrainPerSec', 0, 3);
@@ -734,7 +787,7 @@ export class GameRoom extends DurableObject<Env> {
     g.events = [];
     g.openEv = { sprint: null, incident: null, crash: null, badDeploy: null };
     g.analysis = null;
-    for (const p of Object.values(g.players)) p.dialHints = 0;
+    for (const p of Object.values(g.players)) { p.dialHints = 0; p.lastTaskAt = 0; }
     this.buildBacklog();
     this.dealAllControls();
     this.startSprint(1);
@@ -846,7 +899,8 @@ export class GameRoom extends DurableObject<Env> {
     const now = Date.now();
     g.phase = 'playing';
     g.sprint = n;
-    g.sprintEndsAt = now + g.config.sprintSeconds * 1000;
+    g.tickCount = 0;
+    g.sprintEndsAt = now + (g.tutorial ? TUTORIAL.sprintSeconds : g.config.sprintSeconds) * 1000;
     g.sprintStats = { shipped: 0, bugsFixed: 0, incidentsResolved: 0, triaged: 0, missed: 0, bugsShipped: 0, scoreStart: g.score };
     this.closeEvent(g.openEv.sprint);
     g.openEv.sprint = this.logEvent('sprint', `Sprint ${n}`);
@@ -857,8 +911,12 @@ export class GameRoom extends DurableObject<Env> {
     g.nextTaskAt = now + 3000;
     g.nextIncidentAt = now + (g.config.incidentEverySec * 1000) / this.ramp();
     g.nextTraceAt = now;
-    if (g.config.botChatter) this.botSay('ceo', pick(CEO_SPRINT_LINES));
-    this.botSay('system', `Sprint ${n} of ${g.config.sprintCount} started — ${g.config.sprintSeconds}s on the clock. Ship it! 🚀`);
+    if (g.tutorial) {
+      this.botSay('system', `🎓 Trial run — ${TUTORIAL.sprintSeconds}s of practice. No incidents, no penalties, slower pace. Do what the mission cards say!`);
+    } else {
+      if (g.config.botChatter) this.botSay('ceo', pick(CEO_SPRINT_LINES));
+      this.botSay('system', `Sprint ${n} of ${g.config.sprintCount} started — ${g.config.sprintSeconds}s on the clock. Ship it! 🚀`);
+    }
     this.persist();
     this.broadcastPhase();
     this.ctx.storage.setAlarm(Date.now() + TICK_MS);
@@ -867,6 +925,16 @@ export class GameRoom extends DurableObject<Env> {
   endSprint() {
     const g = this.g!;
     const s = g.sprintStats!;
+    if (g.tutorial) {
+      // trial run over: no review, no retro — straight back to the lobby
+      for (const t of g.tasks) this.finishTask(t, 'cancelled');
+      g.tasks = [];
+      this.closeEvent(g.openEv.sprint);
+      g.openEv.sprint = null;
+      this.botSay('system', `🎓 Trial run over — ${s.shipped} shipped, ${s.bugsFixed} bug${s.bugsFixed === 1 ? '' : 's'} fixed, ${s.triaged} triaged. Ready for the real thing? The host can start sprint 1.`);
+      this.toLobby();
+      return;
+    }
     s.scoreDelta = g.score - s.scoreStart;
     g.stats.sprints.push({ sprint: g.sprint, ...s });
     for (const t of g.tasks) this.finishTask(t, 'cancelled');
@@ -973,6 +1041,7 @@ export class GameRoom extends DurableObject<Env> {
   toLobby() {
     const g = this.g!;
     g.phase = 'lobby';
+    g.tutorial = false;
     g.sprint = 0;
     g.tasks = [];
     g.doneLog = [];
@@ -1276,30 +1345,39 @@ export class GameRoom extends DurableObject<Env> {
 
     this.simTick(now);
 
-    // task deadlines
+    // tutorial: drip guidance into chat as the trial run unfolds
+    if (g.tutorial) {
+      const tip = TUTORIAL_TIPS.find(([tick]) => tick === g.tickCount);
+      if (tip) this.botSay('system', tip[1]);
+    }
+
+    // task deadlines (a trial run is consequence-free)
     for (const t of [...g.tasks]) {
       if (now >= t.deadlineAt) {
         this.finishTask(t, 'failed');
-        g.health -= g.config.missPenalty;
+        if (!g.tutorial) g.health -= g.config.missPenalty;
         g.stats.missed++; g.sprintStats!.missed++;
         this.logEvent('missed', `Missed: ${t.title}`, { actor: t.ownerName });
-        if (g.config.botChatter && Math.random() < 0.4) {
+        if (!g.tutorial && g.config.botChatter && Math.random() < 0.4) {
           this.botSay('support', `Ticket escalated: "${t.title}" — customer says "unacceptable" 😤`);
         }
       }
     }
 
-    // incident lifecycle
+    // incident lifecycle (never during the tutorial)
     if (g.incident) {
       this.updateIncident(now, logs);
-    } else if (now >= g.nextIncidentAt) {
+    } else if (!g.tutorial && now >= g.nextIncidentAt) {
       this.spawnIncident(now);
     }
 
-    // task spawning
+    // task spawning: bigger teams get proportionally more work, so per-player
+    // pressure stays roughly constant instead of diluting with headcount
     if (now >= g.nextTaskAt) {
       this.spawnTask();
-      const gap = (g.config.taskEverySec * 1000) / this.ramp();
+      const everyMs = (g.tutorial ? TUTORIAL.taskEverySec : g.config.taskEverySec) * 1000;
+      const teamScale = 1 + g.config.taskScalePerPlayer * Math.max(0, this.activePlayers().length - 1);
+      const gap = everyMs / (this.ramp() * teamScale);
       g.nextTaskAt = now + gap * (0.7 + Math.random() * 0.6);
     }
 
@@ -1372,22 +1450,31 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   taskDeadline(mult = 1) {
-    return (this.g!.config.taskDeadlineSec * 1000 * mult) / (1 + 0.15 * (this.g!.sprint - 1));
+    const easy = this.g!.tutorial ? TUTORIAL.deadlineMult : 1;
+    return (this.g!.config.taskDeadlineSec * 1000 * mult * easy) / (1 + 0.15 * (this.g!.sprint - 1));
   }
 
-  // spread work evenly: new tasks land on the least-loaded screen
+  // spread work evenly: new tasks land on the least-loaded screen — and the
+  // pick starts that screen's breather cooldown
   pickDisplay(displays: Player[]): Player {
     const load = (p: Player) => this.g!.tasks.filter((t) => t.displayPid === p.id).length;
     const min = Math.min(...displays.map(load));
-    return pick(displays.filter((p) => load(p) === min));
+    const chosen = pick(displays.filter((p) => load(p) === min));
+    chosen.lastTaskAt = Date.now();
+    return chosen;
   }
 
   spawnTask() {
     const g = this.g!;
     const players = this.activePlayers();
     if (!players.length) return;
+    // eligible screens: under the active cap AND past the breather cooldown
+    // since the last task landed on them
+    const cooldownMs = (g.tutorial ? TUTORIAL.cooldownSec : g.config.taskCooldownSec) * 1000;
+    const now = Date.now();
     const displays = players.filter(
-      (p) => g.tasks.filter((t) => t.displayPid === p.id).length < g.config.maxActivePerPlayer,
+      (p) => g.tasks.filter((t) => t.displayPid === p.id).length < g.config.maxActivePerPlayer
+        && now - (p.lastTaskAt ?? 0) >= cooldownMs,
     );
     if (!displays.length) return;
 
@@ -1417,11 +1504,12 @@ export class GameRoom extends DurableObject<Env> {
     const display = this.pickDisplay(displays);
 
     // tutorial nudge: everyone's first ticket or two says where the dial
-    // actually lives — new players don't yet know what's on whose console
+    // actually lives — new players don't yet know what's on whose console.
+    // During the trial run every dial mission says where its dial lives.
     let locHint: string | null = null;
     display.dialHints ??= 0;
-    if (display.dialHints < 2) {
-      display.dialHints++;
+    if (g.tutorial || display.dialHints < 2) {
+      if (!g.tutorial) display.dialHints++;
       locHint = owner.id === display.id ? 'you' : owner.name;
     }
 
@@ -1997,7 +2085,7 @@ export class GameRoom extends DurableObject<Env> {
   publicState(): ClientGame {
     const g = this.g!;
     return {
-      code: g.code, phase: g.phase, config: g.config,
+      code: g.code, phase: g.phase, tutorial: g.tutorial, config: g.config,
       name: g.name, hasPassword: !!g.password,
       players: this.publicPlayers(),
       services: g.services,
@@ -2015,7 +2103,7 @@ export class GameRoom extends DurableObject<Env> {
   broadcastPhase() {
     const g = this.g!;
     this.broadcast({
-      t: 'phase', now: Date.now(), phase: g.phase, sprint: g.sprint,
+      t: 'phase', now: Date.now(), phase: g.phase, sprint: g.sprint, tutorial: g.tutorial,
       sprintEndsAt: g.sprintEndsAt, reviewEndsAt: g.reviewEndsAt,
       score: g.score, health: g.health, victory: g.victory,
       stats: g.stats, sprintStats: g.sprintStats,

@@ -61,7 +61,9 @@ function Header() {
     <header className="h-12 sm:h-14 shrink-0 border-b border-line bg-surface/80 backdrop-blur flex items-center gap-2 sm:gap-4 px-3 sm:px-4">
       <span className="font-bold whitespace-nowrap">🚀 <span className="hidden md:inline">{g.name || 'DreamTeam'}</span></span>
       <Badge className="font-mono tracking-widest max-sm:hidden">{g.code}</Badge>
-      <Badge tone="accent">S{g.sprint}/{g.config.sprintCount}</Badge>
+      {g.tutorial
+        ? <Badge tone="info">🎓 TRIAL</Badge>
+        : <Badge tone="accent">S{g.sprint}/{g.config.sprintCount}</Badge>}
       <span className={cx(
         'text-lg sm:text-2xl font-bold tabular-nums ml-auto w-12 sm:w-16 text-right',
         urgent ? 'text-danger animate-blink' : 'text-ink',

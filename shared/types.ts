@@ -126,6 +126,8 @@ export interface Player {
   isHost: boolean;
   connected: boolean;
   joinedAt: number;
+  /** server-only: when this player's last socket went away */
+  lastSeenAt?: number;
   controls: ControlInstance[];
   /** server-only: how many dial-mission location hints this screen has seen */
   dialHints?: number;
@@ -341,6 +343,7 @@ export type ClientMsg =
   | { t: 'set_name'; name: string }
   | { t: 'set_password'; password: string }
   | { t: 'make_host'; pid: string }
+  | { t: 'leave' }
   | { t: 'config'; patch: Omit<Partial<GameConfig>, 'incidents'> & { incidents?: Partial<Record<IncidentKind, boolean>> } }
   | { t: 'start' }
   | { t: 'next_sprint' }

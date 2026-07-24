@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button, Card, Input, ThemeToggle, SectionLabel } from '../components/ui.tsx';
 import { createRoom, roomInfo, connect } from '../lib/net.ts';
 import { useStore } from '../lib/store.ts';
@@ -30,8 +30,8 @@ export default function Landing() {
     }
   };
 
-  const onJoin = async () => {
-    const c = code.trim().toUpperCase();
+  const onJoin = async (codeArg?: string) => {
+    const c = (codeArg ?? code).trim().toUpperCase();
     if (c.length !== 4) { setErr('Room codes are 4 letters.'); return; }
     setBusy(true); setErr(null);
     const info = await roomInfo(c, pass).catch((): { exists: boolean } & Partial<Awaited<ReturnType<typeof roomInfo>>> => ({ exists: false }));
@@ -49,6 +49,13 @@ export default function Landing() {
     connect(c, saveName(), pass);
     history.replaceState(null, '', `/?room=${c}`);
   };
+
+  // Invite links (/?room=CODE) go straight to joining — no extra click.
+  // Rejoining your own room after a refresh is handled by tryResume().
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(location.search).get('room')?.toUpperCase();
+    if (fromUrl?.length === 4 && fromUrl !== localStorage.getItem('dt-room')) onJoin(fromUrl);
+  }, []);
 
   const connecting = busy || s.status === 'connecting' || s.status === 'reconnecting';
 
@@ -95,7 +102,7 @@ export default function Landing() {
                 maxLength={4}
                 className="w-28 text-center font-mono font-bold tracking-[0.3em] uppercase"
               />
-              <Button variant="outline" className="flex-1" onClick={onJoin} disabled={connecting}>
+              <Button variant="outline" className="flex-1" onClick={() => onJoin()} disabled={connecting}>
                 Join a team
               </Button>
             </div>

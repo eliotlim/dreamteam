@@ -66,6 +66,14 @@ export function connect(code: string, name: string, pass = '') {
   };
 }
 
+// Leave the party for good: the server drops us from the roster, then back
+// to the landing page with the invite param cleared so we don't auto-rejoin.
+export function leaveTeam() {
+  send({ t: 'leave' });
+  disconnect();
+  history.replaceState(null, '', '/');
+}
+
 export function disconnect() {
   manualClose = true;
   clearTimeout(retryTimer);

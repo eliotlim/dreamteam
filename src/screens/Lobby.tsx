@@ -6,7 +6,7 @@ import {
   Button, Card, Badge, Avatar, Switch, Seg, ThemeToggle, SectionLabel, Dot, Input, cx,
 } from '../components/ui.tsx';
 import {
-  setRole, setConfig, startGame, renameSelf, setRoomName, setPassword, makeHost,
+  setRole, setConfig, startGame, renameSelf, setRoomName, setPassword, makeHost, leaveTeam,
 } from '../lib/net.ts';
 import { useStore } from '../lib/store.ts';
 
@@ -148,7 +148,12 @@ export default function Lobby() {
     <div className="min-h-full flex flex-col">
       <header className="flex items-center justify-between px-5 py-4 max-w-5xl w-full mx-auto">
         <div className="flex items-center gap-2 font-bold text-lg">🚀 {g.name || 'DreamTeam'}</div>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="sm" onClick={leaveTeam} title="Leave this team and go back to the start">
+            ← Leave team
+          </Button>
+          <ThemeToggle />
+        </div>
       </header>
 
       <main className="flex-1 w-full max-w-5xl mx-auto px-4 sm:px-5 pb-10 grid gap-5 md:grid-cols-[1fr_360px] content-start">

@@ -20,6 +20,8 @@ const REVIEW_SECONDS = 15;
 const PER_REPLICA_RPS = 35;
 // a room nobody has touched for this long deletes itself
 const ROOM_TTL_MS = 30 * 60 * 1000;
+// a player with no socket for this long leaves the party for real
+const PLAYER_TTL_MS = 60 * 1000;
 
 // Deterministic starting values for the ops console — the sim needs a sane
 // initial state (3 pods, warm-ish cache, moderate drain, nothing to zero).
@@ -285,7 +287,7 @@ export class GameRoom extends DurableObject<Env> {
     this.broadcast({ t: 'players', players: this.publicPlayers() }, ws);
   }
 
-  webSocketClose(ws: WebSocket) {
+  async webSocketClose(ws: WebSocket) {
     const att = ws.deserializeAttachment();
     if (!att || !this.g) return;
     const stillHere = this.ctx.getWebSockets().some(
@@ -294,7 +296,21 @@ export class GameRoom extends DurableObject<Env> {
     if (stillHere) return;
     const p = this.g!.players[att.pid];
     if (!p) return;
+    this.releasePlayer(p);
+    this.persist();
+    this.broadcast({ t: 'players', players: this.publicPlayers() });
+    // lobby/ended rooms sleep until the room TTL — pull the alarm forward so
+    // the inactivity sweep can retire this player on time
+    const due = Date.now() + PLAYER_TTL_MS;
+    const cur = await this.ctx.storage.getAlarm();
+    if (cur === null || cur > due) this.ctx.storage.setAlarm(due);
+  }
+
+  // Shared teardown for disconnects, explicit leaves, and the inactivity
+  // sweep: hand off hosting, crit controls, and any live work.
+  releasePlayer(p: Player) {
     p.connected = false;
+    p.lastSeenAt = Date.now();
     if (p.isHost) {
       p.isHost = false;
       // hosting falls back to the lobby's creator when present, else seniority
@@ -344,6 +360,18 @@ export class GameRoom extends DurableObject<Env> {
         }
       }
     }
+  }
+
+  // Drop a player from the roster for good — explicit leave or timed out.
+  removePlayer(p: Player, farewell: string) {
+    this.releasePlayer(p);
+    delete this.g!.players[p.id];
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws.deserializeAttachment()?.pid === p.id) {
+        try { ws.close(1000, 'left the room'); } catch { /* already gone */ }
+      }
+    }
+    this.botSay('system', farewell);
     this.persist();
     this.broadcast({ t: 'players', players: this.publicPlayers() });
   }
@@ -396,6 +424,10 @@ export class GameRoom extends DurableObject<Env> {
         this.botSay('system', pw ? '🔒 The lobby is now password-protected.' : '🔓 Lobby password removed.');
         this.persist();
         this.broadcast({ t: 'room', hasPassword: !!g.password });
+        break;
+      }
+      case 'leave': {
+        this.removePlayer(p, `${p.name} left the team 👋`);
         break;
       }
       case 'make_host': {
@@ -867,8 +899,8 @@ export class GameRoom extends DurableObject<Env> {
       : 'The site is down and morale is downer. Mandatory fun retreat next week.');
     this.persist();
     this.broadcastPhase();
-    // ticking stops, but the idle sweep must keep running
-    this.ctx.storage.setAlarm(Date.now() + ROOM_TTL_MS);
+    // ticking stops, but the idle + inactivity sweeps must keep running
+    this.armIdleAlarm();
   }
 
   // Post-game cause analysis: read the ledger, spot the team's recurring
@@ -950,8 +982,8 @@ export class GameRoom extends DurableObject<Env> {
     const { startingServices = [] } = PRESETS[g.config.preset as PresetId] || {};
     g.services = [...CORE_SERVICES, ...startingServices];
     this.persist();
-    // ticking stops, but the idle sweep must keep running
-    this.ctx.storage.setAlarm(Date.now() + ROOM_TTL_MS);
+    // ticking stops, but the idle + inactivity sweeps must keep running
+    this.armIdleAlarm();
     this.broadcast({ t: 'snapshot', g: this.publicState(), now: Date.now() });
   }
 
@@ -1183,6 +1215,36 @@ export class GameRoom extends DurableObject<Env> {
 
   // ------------------------------------------------------------- tick
 
+  // Retire players whose sockets have been gone for PLAYER_TTL_MS so they
+  // don't linger in the roster as "offline" forever.
+  sweepInactivePlayers() {
+    const g = this.g!;
+    const live = new Set(
+      this.ctx.getWebSockets().map((ws) => ws.deserializeAttachment()?.pid),
+    );
+    for (const p of Object.values(g.players)) {
+      if (p.connected && !live.has(p.id)) {
+        // missed close event — start their inactivity clock now
+        this.releasePlayer(p);
+        this.persist();
+        this.broadcast({ t: 'players', players: this.publicPlayers() });
+      } else if (!p.connected && Date.now() - (p.lastSeenAt ?? 0) >= PLAYER_TTL_MS) {
+        this.removePlayer(p, `${p.name} was inactive and left the team 💤`);
+      }
+    }
+  }
+
+  // Non-ticking rooms (lobby / ended) wake for whichever comes first: the
+  // next disconnected player's TTL or the room idle sweep.
+  armIdleAlarm() {
+    const g = this.g!;
+    const gone = Object.values(g.players).filter((p) => !p.connected);
+    const next = gone.length
+      ? Math.min(...gone.map((p) => (p.lastSeenAt ?? 0) + PLAYER_TTL_MS))
+      : (g.lastActiveAt ?? Date.now()) + ROOM_TTL_MS;
+    this.ctx.storage.setAlarm(Math.max(next, Date.now() + 1000));
+  }
+
   async alarm() {
     const g = this.g!;
     if (!g) return;
@@ -1196,14 +1258,15 @@ export class GameRoom extends DurableObject<Env> {
       await this.ctx.storage.deleteAll();
       return;
     }
+    this.sweepInactivePlayers();
     if (g.phase === 'review') {
       if (Date.now() >= g.reviewEndsAt) { this.startSprint(g.sprint + 1); return; }
       this.ctx.storage.setAlarm(Date.now() + TICK_MS);
       return;
     }
     if (g.phase !== 'playing') {
-      // lobby / ended rooms wake only to re-check idleness
-      this.ctx.storage.setAlarm((g.lastActiveAt ?? Date.now()) + ROOM_TTL_MS);
+      // lobby / ended rooms wake only for player TTLs and the idle re-check
+      this.armIdleAlarm();
       return;
     }
 

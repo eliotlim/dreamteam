@@ -49,15 +49,26 @@ function useWrongFlash() {
   return [wrong, flash] as const;
 }
 
-function PenaltyFooter({ t, tone, wrongGuesses }: { t: TimeInfo; tone: Tone; wrongGuesses?: number }) {
+// Always rendered, penalty label space always reserved — selecting answers or
+// celebrating never changes the card's footprint.
+function PenaltyFooter({ t, tone, wrongGuesses, celebrate }: {
+  t: TimeInfo; tone: Tone; wrongGuesses?: number; celebrate?: boolean;
+}) {
+  const wrongs = wrongGuesses ?? 0;
   return (
     <div className="flex items-center justify-between gap-2">
-      <Progress value={t.pct} tone={t.urgent ? 'danger' : tone} className="flex-1" />
-      {(wrongGuesses ?? 0) > 0 && (
-        <span className="text-[10px] font-semibold text-danger whitespace-nowrap">
-          {wrongGuesses}✗ · −{GUESS_PENALTY.secs}s each
-        </span>
-      )}
+      <Progress
+        value={celebrate ? 100 : t.pct}
+        tone={celebrate ? 'ok' : t.urgent ? 'danger' : tone}
+        animate={!celebrate}
+        className="flex-1"
+      />
+      <span className={cx(
+        'text-[10px] font-semibold whitespace-nowrap tabular-nums',
+        wrongs > 0 && !celebrate ? 'text-danger' : 'invisible',
+      )}>
+        {Math.max(wrongs, 1)}✗ · −{GUESS_PENALTY.secs}s each
+      </span>
     </div>
   );
 }
@@ -196,7 +207,7 @@ function CodeMissionCard({ task, now, isEngineer }: { task: CodeTask; now: numbe
           🚀 Ship it
         </Button>
       )}
-      {!task.celebrate && <PenaltyFooter t={t} tone="info" wrongGuesses={task.wrongGuesses} />}
+      <PenaltyFooter t={t} tone="info" wrongGuesses={task.wrongGuesses} celebrate={task.celebrate} />
     </Card>
   );
 }
@@ -239,23 +250,25 @@ function TriageMissionCard({ task, now, isOps }: { task: TriageTask; now: number
             key={i}
             onClick={() => tap(i)}
             className={cx(
-              'px-2 py-2.5 sm:py-1.5 rounded-lg border text-xs font-medium text-left transition-colors',
+              'relative px-2 py-2.5 sm:py-1.5 rounded-lg border text-xs font-medium text-left transition-colors',
               'outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
               task.celebrate
                 ? i === task.answer
-                  ? 'bg-ok-soft border-ok text-ok font-semibold'
+                  ? 'bg-ok-soft border-ok text-ok'
                   : 'border-line opacity-50'
                 : 'border-line hover:bg-accent-soft hover:border-accent/40 cursor-pointer',
               wrong === i && 'bg-danger-soft border-danger animate-shake',
             )}
           >
             {opt}
-            {task.celebrate && i === task.answer && <span className="ml-1">✓</span>}
+            {task.celebrate && i === task.answer && (
+              <span className="absolute -top-1.5 -right-1.5 size-5 rounded-full bg-ok text-white text-[11px] flex items-center justify-center">✓</span>
+            )}
             {!task.celebrate && isOps && i === task.answer && <span className="ml-1 text-[10px] opacity-70" title="ops instinct">⭐</span>}
           </button>
         ))}
       </div>
-      {!task.celebrate && <PenaltyFooter t={t} tone="accent" wrongGuesses={task.wrongGuesses} />}
+      <PenaltyFooter t={t} tone="accent" wrongGuesses={task.wrongGuesses} celebrate={task.celebrate} />
     </Card>
   );
 }
@@ -336,7 +349,7 @@ function DesignMissionCard({ task, now, isDesigner }: { task: DesignTask; now: n
         {task.designKind === 'radius' && task.options.map((opt, i) =>
           optionBox(i, null, { background: 'var(--dt-raised)', borderRadius: opt }))}
       </div>
-      {!task.celebrate && <PenaltyFooter t={t} tone="accent" wrongGuesses={task.wrongGuesses} />}
+      <PenaltyFooter t={t} tone="accent" wrongGuesses={task.wrongGuesses} celebrate={task.celebrate} />
     </Card>
   );
 }

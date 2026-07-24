@@ -77,7 +77,7 @@ function NodeInspector({ id, onClose }: { id: string; onClose: () => void }) {
     .filter((x): x is NonNullable<typeof x> => !!x);
 
   return (
-    <Card className="p-3.5 space-y-3 animate-pop shrink-0">
+    <Card className="p-3.5 space-y-3 animate-pop shadow-xl">
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold text-sm">{def.icon} {def.label}</span>
         <span className="flex items-center gap-2">
@@ -126,7 +126,12 @@ export default function Infra({ full = false }: { full?: boolean }) {
   const s = useStore();
   const g = s.g!;
   const now = useNow(500);
-  const [sel, setSel] = useState<string | null>(null);
+  // Open on the first unhealthy node so incident controls are one glance away.
+  const [sel, setSel] = useState<string | null>(() =>
+    (g.services || []).find((id) => {
+      const st = g.nodes?.[id]?.s;
+      return st && st !== 'ok';
+    }) ?? null);
   const services = g.services || [];
   const nodes = g.nodes || {};
   const me = s.you ? g.players[s.you] : undefined;
@@ -175,9 +180,9 @@ export default function Infra({ full = false }: { full?: boolean }) {
 
   return (
     <div className="flex flex-col gap-3 h-full min-h-0 overflow-y-auto">
-      <Card className={cx('overflow-hidden shrink-0', full ? 'flex-1 min-h-[260px]' : 'h-[300px] sm:h-[340px]')}>
+      <Card className={cx('relative overflow-hidden shrink-0', full ? 'flex-1 min-h-[260px]' : 'h-[300px] sm:h-[340px]')}>
         <ReactFlow
-          key={`${services.join('|')}${selected ? '+inspect' : ''}`}
+          key={services.join('|')}
           nodes={flowNodes}
           edges={flowEdges}
           nodeTypes={nodeTypes}
@@ -197,9 +202,14 @@ export default function Infra({ full = false }: { full?: boolean }) {
         >
           <Background gap={18} size={1} color="var(--dt-line)" />
         </ReactFlow>
+        {/* inspector floats over the map, right where the tap happened — the
+            map never resizes and the controls are impossible to miss */}
+        {selected && (
+          <div className="absolute z-10 inset-x-2 bottom-2 max-h-[75%] sm:inset-x-auto sm:bottom-auto sm:right-2 sm:top-2 sm:w-[340px] sm:max-h-[calc(100%-16px)] overflow-y-auto rounded-2xl">
+            <NodeInspector id={selected} onClose={() => setSel(null)} />
+          </div>
+        )}
       </Card>
-
-      {selected && <NodeInspector id={selected} onClose={() => setSel(null)} />}
 
       <IncidentCard incident={g.incident} now={now} compact />
 
@@ -223,6 +233,7 @@ export default function Infra({ full = false }: { full?: boolean }) {
                 </span>
               </button>
             ))}
+            <div className="text-[11px] text-faint px-1.5 pt-0.5">tap a service (here or on the map) to open its controls</div>
           </div>
         )}
       </Card>

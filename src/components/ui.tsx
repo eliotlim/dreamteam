@@ -288,10 +288,12 @@ export function ThemeToggle({ className }: { className?: string }) {
 
 // ---------------------------------------------------------------- overlay
 
-export function Overlay({ children }: { children?: ReactNode }) {
+export function Overlay({ children, wide }: { children?: ReactNode; wide?: boolean }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="animate-pop w-full max-w-lg">{children}</div>
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 backdrop-blur-sm">
+      <div className="min-h-full flex items-center justify-center p-4">
+        <div className={cx('animate-pop w-full', wide ? 'max-w-3xl' : 'max-w-lg')}>{children}</div>
+      </div>
     </div>
   );
 }

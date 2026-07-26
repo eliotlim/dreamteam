@@ -5,6 +5,7 @@ import {
   SERVICES, CORE_SERVICES, EPIC_FEATURES, REGIONS, AMBIENT_LOGS, SERVICE_LOGS,
   TRACE_ROUTES, BOTS, CEO_SPRINT_LINES, CEO_INCIDENT_LINES, instructionFor,
   NAME_ADJECTIVES, NAME_NOUNS, CONTROL_SERVICE, DESIGN_COLORS, DESIGN_RADII,
+  ROLE_BONUS, taskNaturalRole,
 } from '../shared/content.ts';
 import { CODE_SNIPPETS, SNIPPETS_BY_TITLE } from '../shared/snippets.ts';
 import type {
@@ -16,7 +17,9 @@ import type {
 } from '../shared/types.ts';
 
 const TICK_MS = 1000;
-const REVIEW_SECONDS = 15;
+// sprint retro: long enough to actually read the cause-and-effect timeline
+// and re-plan; the host can start the next sprint any time before it expires
+const REVIEW_SECONDS = 75;
 const PER_REPLICA_RPS = 35;
 // a room nobody has touched for this long deletes itself
 const ROOM_TTL_MS = 30 * 60 * 1000;
@@ -37,6 +40,7 @@ const TUTORIAL_TIPS: [number, string][] = [
   [8, '🎓 Tip: mission cards land on your Console. Do exactly what the card says — tap, slide, or ship.'],
   [30, '🎓 Tip: if a card names a dial that is not on your console, a teammate has it. Say the instruction out loud!'],
   [55, '🎓 Tip: the 📌 Board shows the whole team\'s work, and 🔭 Observe shows the system\'s health. The PM can reassign tasks from the Board.'],
+  [72, '🎓 Tip: your role is a superpower — engineers see 🐞 on buggy lines, ops & PMs get ⭐ instincts, designers get 📐 compare tools. Work in your lane for a ⚡ bonus.'],
 ];
 
 // Deterministic starting values for the ops console — the sim needs a sane
@@ -121,7 +125,7 @@ function freshSim(): Sim {
 function freshStats(): GameStats {
   return {
     shipped: 0, bugsFixed: 0, incidentsResolved: 0, triaged: 0, missed: 0,
-    bugsShipped: 0, wrongGuesses: 0, sprints: [],
+    bugsShipped: 0, wrongGuesses: 0, roleMatches: 0, sprints: [],
   };
 }
 
@@ -158,7 +162,7 @@ function freshState(code: string): GameState {
     // causal ledger: everything notable that happened, with `cause` links —
     // feeds the retro Gantt and the failure-mode analysis
     events: [],
-    openEv: { sprint: null, incident: null, crash: null, badDeploy: null },
+    openEv: { sprint: null, incident: null, crash: null, badDeploy: null, escalation: null },
     analysis: null,
     sprintStats: null,
     usedSnippets: [],
@@ -207,7 +211,9 @@ export class GameRoom extends DurableObject<Env> {
         this.g!.password ??= null;
         this.g!.creatorPid ??= null;
         this.g!.events ??= [];
-        this.g!.openEv ??= { sprint: null, incident: null, crash: null, badDeploy: null };
+        this.g!.openEv ??= { sprint: null, incident: null, crash: null, badDeploy: null, escalation: null };
+        this.g!.openEv.escalation ??= null;
+        this.g!.stats.roleMatches ??= 0;
         this.g!.analysis ??= null;
       }
       // every live room keeps an alarm pending — ticks while playing, the
@@ -529,7 +535,11 @@ export class GameRoom extends DurableObject<Env> {
         break;
       }
       case 'triage_pick': {
-        this.answerTask<TriageTask>(p, msg.taskId, 'triage', (task) => Number(msg.choice) === task.answer);
+        this.answerTask<TriageTask>(
+          p, msg.taskId, 'triage',
+          (task) => Number(msg.choice) === task.answer,
+          (task, evId) => this.escalateTriage(task, p, evId, Number(msg.choice)),
+        );
         break;
       }
       case 'design_pick': {
@@ -623,8 +633,13 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   // Quiz-style missions (triage/design): right answer completes, wrong
-  // answers share one penalty policy.
-  answerTask<T extends Task>(p: Player, taskId: string, kind: T['kind'], isCorrect: (task: T) => boolean) {
+  // answers share one penalty policy. onWrong lets a mission kind attach
+  // consequences beyond the flat penalty (e.g. mis-routing a P0).
+  answerTask<T extends Task>(
+    p: Player, taskId: string, kind: T['kind'],
+    isCorrect: (task: T) => boolean,
+    onWrong?: (task: T, wrongEvId: string) => void,
+  ) {
     const g = this.g!;
     if (g.phase !== 'playing') return;
     const task = g.tasks.find((x) => x.id === taskId && x.kind === kind) as T | undefined;
@@ -632,18 +647,36 @@ export class GameRoom extends DurableObject<Env> {
     if (isCorrect(task)) {
       this.completeTask(task, p);
     } else {
-      this.penalizeGuess(task);
+      const evId = this.penalizeGuess(task, p);
+      onWrong?.(task, evId);
     }
     this.persist();
   }
 
-  penalizeGuess(task: Task) {
+  penalizeGuess(task: Task, p?: Player): string {
     const g = this.g!;
     task.wrongGuesses = (task.wrongGuesses ?? 0) + 1;
     task.deadlineAt -= GUESS_PENALTY.secs * 1000;
     g.score = Math.max(0, g.score - GUESS_PENALTY.points);
     g.stats.wrongGuesses++;
+    if (g.sprintStats) g.sprintStats.wrongGuesses = (g.sprintStats.wrongGuesses ?? 0) + 1;
     this.broadcast({ t: 'task', task });
+    return this.logEvent('wrong', `Wrong call: ${task.title}`, { actor: p?.name ?? task.ownerName });
+  }
+
+  // Mis-routing a genuine P0 has weight: the problem doesn't wait for the
+  // backlog. Subtle cues now (support grumble, error-budget log line), a
+  // faster next incident soon — and the whole chain shows up in the retro.
+  escalateTriage(task: TriageTask, p: Player, wrongEvId: string, choice: number) {
+    const g = this.g!;
+    if (g.tutorial || task.answer !== 0 || choice === 0 || g.openEv.escalation) return;
+    g.openEv.escalation = this.logEvent(
+      'escalation', `P0 mis-routed: “${task.ticketText.slice(0, 56)}”`,
+      { cause: wrongEvId, actor: p.name },
+    );
+    g.nextIncidentAt = Math.min(g.nextIncidentAt, Date.now() + 12000);
+    g.logs.push(this.makeLog(['warn', 'backend', 'error budget burning — unresolved P0 in the wild']));
+    this.botSay('support', `📟 Um — “${task.ticketText.slice(0, 48)}…” felt like a page to me. Hope you're right.`);
   }
 
   // Code review, act 1: tap the broken line. A correct tap patches the line in
@@ -658,7 +691,7 @@ export class GameRoom extends DurableObject<Env> {
       task.snippet.lines[task.bugLine] = task.fix;
       this.broadcast({ t: 'task', task });
     } else {
-      this.penalizeGuess(task);
+      this.penalizeGuess(task, p);
     }
     this.persist();
   }
@@ -785,7 +818,7 @@ export class GameRoom extends DurableObject<Env> {
     g.usedSnippets = [];
     g.usedTickets = [];
     g.events = [];
-    g.openEv = { sprint: null, incident: null, crash: null, badDeploy: null };
+    g.openEv = { sprint: null, incident: null, crash: null, badDeploy: null, escalation: null };
     g.analysis = null;
     for (const p of Object.values(g.players)) { p.dialHints = 0; p.lastTaskAt = 0; }
     this.buildBacklog();
@@ -901,7 +934,13 @@ export class GameRoom extends DurableObject<Env> {
     g.sprint = n;
     g.tickCount = 0;
     g.sprintEndsAt = now + (g.tutorial ? TUTORIAL.sprintSeconds : g.config.sprintSeconds) * 1000;
-    g.sprintStats = { shipped: 0, bugsFixed: 0, incidentsResolved: 0, triaged: 0, missed: 0, bugsShipped: 0, scoreStart: g.score };
+    g.sprintStats = { shipped: 0, bugsFixed: 0, incidentsResolved: 0, triaged: 0, missed: 0, bugsShipped: 0, wrongGuesses: 0, roleMatches: 0, scoreStart: g.score };
+    g.analysis = null; // last sprint's retro analysis is stale now
+    // situations don't survive the sprint boundary — close dangling chains
+    for (const k of ['crash', 'badDeploy', 'escalation'] as const) {
+      this.closeEvent(g.openEv[k]);
+      g.openEv[k] = null;
+    }
     this.closeEvent(g.openEv.sprint);
     g.openEv.sprint = this.logEvent('sprint', `Sprint ${n}`);
     g.tasks = [];
@@ -948,7 +987,9 @@ export class GameRoom extends DurableObject<Env> {
     }
     g.phase = 'review';
     g.reviewEndsAt = Date.now() + REVIEW_SECONDS * 1000;
-    this.botSay('system', `Sprint ${g.sprint} review: ${s.shipped} shipped, ${s.bugsFixed} bugs fixed, ${s.incidentsResolved} incidents resolved, ${s.missed} missed.`);
+    // sprint retro: scope the failure-mode analysis to this sprint's window
+    g.analysis = this.analyzeGame('sprint');
+    this.botSay('system', `Sprint ${g.sprint} retro: ${s.shipped} shipped, ${s.bugsFixed} bugs fixed, ${s.incidentsResolved} incidents resolved, ${s.missed} missed. Study the timeline — then go again.`);
     this.persist();
     this.broadcastPhase();
     this.ctx.storage.setAlarm(Date.now() + TICK_MS);
@@ -971,16 +1012,25 @@ export class GameRoom extends DurableObject<Env> {
     this.armIdleAlarm();
   }
 
-  // Post-game cause analysis: read the ledger, spot the team's recurring
-  // failure modes, and say them out loud for the retro.
-  analyzeGame(): AnalysisItem[] {
+  // Cause analysis: read the ledger, spot the team's recurring failure
+  // modes, and say them out loud. Scope 'sprint' windows it to the current
+  // sprint for the between-sprint retro; 'game' covers the whole run.
+  analyzeGame(scope: 'game' | 'sprint' = 'game'): AnalysisItem[] {
     const g = this.g!;
-    const ev = g.events;
+    let ev = g.events;
+    let counts = { missed: g.stats.missed, wrongGuesses: g.stats.wrongGuesses, bugsShipped: g.stats.bugsShipped };
+    if (scope === 'sprint') {
+      let i = ev.length - 1;
+      while (i > 0 && ev[i].type !== 'sprint') i--;
+      ev = ev.slice(i);
+      const s = g.sprintStats!;
+      counts = { missed: s.missed, wrongGuesses: s.wrongGuesses ?? 0, bugsShipped: s.bugsShipped };
+    }
     const out: AnalysisItem[] = [];
     const incidents = ev.filter((e) => e.type === 'incident');
     const resolved = incidents.filter((e) => e.outcome === 'resolved');
     const failed = incidents.filter((e) => e.outcome === 'failed');
-    const shippedBugs = g.stats.bugsShipped;
+    const shippedBugs = counts.bugsShipped;
 
     if (shippedBugs > 0) {
       const meltdowns = ev.filter((e) => (e.type === 'crash' || e.type === 'bad_deploy') && e.cause).length;
@@ -1020,20 +1070,39 @@ export class GameRoom extends DurableObject<Env> {
         detail: 'They timed out and took team health with them. When the pager fires, someone must own it out loud within seconds.',
       });
     }
-    if (g.stats.missed >= 3) {
+    const festers = ev.filter((e) => e.type === 'fester').length;
+    if (festers) {
       out.push({
-        icon: '⏰', title: `${g.stats.missed} missions expired untouched`,
+        icon: '🦠', title: `${festers} missed fix${festers > 1 ? 'es' : ''} festered into bigger work`,
+        detail: 'A skipped bug never disappears — it comes back with interest. If a fix can\'t be reached in time, the PM should reassign it, not let it rot.',
+      });
+    }
+    const escalations = ev.filter((e) => e.type === 'escalation').length;
+    if (escalations) {
+      out.push({
+        icon: '📟', title: `${escalations} genuine P0${escalations > 1 ? 's' : ''} routed away from the pager`,
+        detail: 'Downgrading a page doesn\'t calm the problem — it just deletes your warning. The next incident arrived faster because of it.',
+      });
+    }
+    const missedBar = scope === 'sprint' ? 2 : 3;
+    if (counts.missed >= missedBar) {
+      out.push({
+        icon: '⏰', title: `${counts.missed} missions expired untouched`,
         detail: 'Work is landing on screens nobody is watching. Call out your instructions — the dial is probably on someone else\'s console.',
       });
     }
-    if (g.stats.wrongGuesses >= 5) {
+    const wrongBar = scope === 'sprint' ? 3 : 5;
+    if (counts.wrongGuesses >= wrongBar) {
       out.push({
-        icon: '🎯', title: `${g.stats.wrongGuesses} wrong taps across reviews and triage`,
+        icon: '🎯', title: `${counts.wrongGuesses} wrong taps across reviews and triage`,
         detail: `Guessing costs ${GUESS_PENALTY.points} points and ${GUESS_PENALTY.secs}s each. Slow down half a beat — the answer is usually in the text.`,
       });
     }
     if (!out.length) {
-      out.push({ icon: '✨', title: 'A suspiciously clean run', detail: 'No recurring failure modes detected. Either you are excellent or the chaos settings are too kind.' });
+      out.push({
+        icon: '✨', title: scope === 'sprint' ? 'A clean sprint' : 'A suspiciously clean run',
+        detail: 'No recurring failure modes detected. Either you are excellent or the chaos settings are too kind.',
+      });
     }
     return out.slice(0, 5);
   }
@@ -1357,7 +1426,8 @@ export class GameRoom extends DurableObject<Env> {
         this.finishTask(t, 'failed');
         if (!g.tutorial) g.health -= g.config.missPenalty;
         g.stats.missed++; g.sprintStats!.missed++;
-        this.logEvent('missed', `Missed: ${t.title}`, { actor: t.ownerName });
+        const missedId = this.logEvent('missed', `Missed: ${t.title}`, { actor: t.ownerName, cause: t.causeEv });
+        if (!g.tutorial) this.cascadeMissed(t, missedId);
         if (!g.tutorial && g.config.botChatter && Math.random() < 0.4) {
           this.botSay('support', `Ticket escalated: "${t.title}" — customer says "unacceptable" 😤`);
         }
@@ -1761,6 +1831,64 @@ export class GameRoom extends DurableObject<Env> {
     return true;
   }
 
+  // A missed bug fix doesn't evaporate — it festers. The work comes back
+  // bigger (more points, more pressure), visibly marked as fallout, and the
+  // whole missed → festered → fixed/missed-again chain nests in the retro.
+  cascadeMissed(t: Task, missedId: string) {
+    const g = this.g!;
+    const isBugFix = t.kind === 'bug' || (t.kind === 'code' && t.codeKind === 'bug');
+    if (!isBugFix || t.escalation) return; // consequences don't breed consequences
+    const players = this.activePlayers();
+    if (!players.length) return;
+
+    const festerId = this.logEvent('fester', `It came back: ${t.title}`, { cause: missedId });
+    const display = players.find((p) => p.id === t.displayPid) ?? this.pickDisplay(players);
+    const base = {
+      id: uid(),
+      causeNote: 'fallout — we ignored this bug and it got worse',
+      causeEv: festerId,
+      escalation: true,
+      wrongGuesses: 0,
+      displayPid: display.id,
+      createdAt: Date.now(),
+      status: 'active' as const,
+    };
+
+    let task: Task | null = null;
+    if (t.kind === 'code') {
+      task = {
+        ...t, ...base,
+        title: `Escalated: ${t.title.replace(/^Fix: /, '')}`,
+        ownerPid: display.id, ownerName: display.name,
+        snippet: { name: t.snippet.name, lines: [...t.snippet.lines] },
+        patched: false,
+        points: Math.round(t.points * 1.5),
+        deadlineAt: Date.now() + this.taskDeadline(2),
+      };
+    } else if (isDialTask(t) && !t.quorum) {
+      // the dial may have moved screens since — find whoever holds it now
+      const holder = players.find((p) => p.controls.some((c) => c.key === t.controlKey));
+      if (!holder) return;
+      const control = holder.controls.find((c) => c.key === t.controlKey)!;
+      const target = this.rollTarget(control);
+      task = {
+        ...t, ...base,
+        title: `Escalated: ${t.title}`,
+        instr: instructionFor(control, target),
+        locHint: null,
+        ownerPid: holder.id, ownerName: holder.name,
+        target,
+        points: Math.round(t.points * 1.5),
+        deadlineAt: Date.now() + this.taskDeadline(1.25),
+      };
+    }
+    if (!task) return;
+    g.tasks.push(task);
+    g.logs.push(this.makeLog(['warn', 'backend', `regression re-opened: ${t.title.slice(0, 40)}`]));
+    this.botSay('support', `🔥 "${t.title}" is back, and angrier. Customers noticed we ignored it.`);
+    this.broadcast({ t: 'task', task });
+  }
+
   finishTask(task: Task, status: TaskStatus) {
     const g = this.g!;
     task.status = status;
@@ -1773,21 +1901,32 @@ export class GameRoom extends DurableObject<Env> {
   completeTask(task: Task, by: Player | null = null) {
     const g = this.g!;
     const fast = Date.now() - task.createdAt < (task.deadlineAt - task.createdAt) / 2;
-    g.score += task.points + (fast ? 25 : 0);
+    // role synergy: the matching specialist clearing their own kind of work
+    // earns a bonus — the mechanical reason a role should own its lane
+    const doer = by ?? (task.ownerPid ? g.players[task.ownerPid] : null);
+    const natural = taskNaturalRole(task);
+    const roleBonus = doer && natural && doer.role === natural ? ROLE_BONUS : 0;
+    if (roleBonus) {
+      g.stats.roleMatches = (g.stats.roleMatches ?? 0) + 1;
+      g.sprintStats!.roleMatches = (g.sprintStats!.roleMatches ?? 0) + 1;
+      task.roleBonus = roleBonus; // rides the final task broadcast → celebrate ghost
+    }
+    g.score += task.points + (fast ? 25 : 0) + roleBonus;
     g.health = clamp(g.health + g.config.healOnComplete, 0, 100);
     const asBug = task.kind === 'bug' || (task.kind === 'code' && task.codeKind === 'bug');
     const actor = by?.name ?? task.ownerName;
+    const cause = task.causeEv ?? null;
     let shipEventId: string | null = null;
     if (task.kind === 'triage') {
       g.stats.triaged = (g.stats.triaged ?? 0) + 1;
       g.sprintStats!.triaged = (g.sprintStats!.triaged ?? 0) + 1;
-      this.logEvent('triage', `Triaged: ${task.ticketText?.slice(0, 60) ?? task.title}`, { actor });
+      this.logEvent('triage', `Triaged: ${task.ticketText?.slice(0, 60) ?? task.title}`, { actor, cause });
     } else if (asBug) {
       g.stats.bugsFixed++; g.sprintStats!.bugsFixed++;
-      this.logEvent('fix', task.title.startsWith('Fix') ? task.title : `Fixed: ${task.title}`, { actor });
+      this.logEvent('fix', task.title.startsWith('Fix') ? task.title : `Fixed: ${task.title}`, { actor, cause });
     } else {
       g.stats.shipped++; g.sprintStats!.shipped++;
-      shipEventId = this.logEvent('ship', task.title.startsWith('Build') ? task.title : `Shipped: ${task.title}`, { actor });
+      shipEventId = this.logEvent('ship', task.title.startsWith('Build') ? task.title : `Shipped: ${task.title}`, { actor, cause });
     }
     this.finishTask(task, 'done');
     if (task.epicService) this.unlockService(task.epicService, task.title, shipEventId);
@@ -1861,8 +2000,16 @@ export class GameRoom extends DurableObject<Env> {
     } else {
       g.incident = { ...base, title: def.title, desc: def.desc, goal: def.goal, hint: def.hint };
     }
-    g.openEv.incident = this.logEvent('incident', def.title, { kind });
+    // a mis-routed P0 earlier makes this incident *its* consequence — link
+    // the chain for the retro and say the quiet part out loud
+    const escalation = g.openEv.escalation;
+    g.openEv.incident = this.logEvent('incident', def.title, { kind, cause: escalation });
+    if (escalation) {
+      this.closeEvent(escalation);
+      g.openEv.escalation = null;
+    }
     this.botSay('pager', `🚨 INCIDENT: ${mode === 'realism' ? def.alert : `${def.title} — ${def.desc}`}`);
+    if (escalation) this.botSay('support', '🧾 For the record: this traces back to that ticket we didn\'t page on.');
     if (cfg.botChatter && Math.random() < 0.5) this.botSay('ceo', pick(CEO_INCIDENT_LINES));
     this.broadcast({ t: 'incident', incident: g.incident });
   }
@@ -2026,7 +2173,7 @@ export class GameRoom extends DurableObject<Env> {
       .filter((t): t is DialTask =>
         isDialTask(t) && !t.quorum && t.ownerPid === p.id && t.controlKey === key && t.target === effective)
       .sort((a, b) => a.createdAt - b.createdAt)[0];
-    if (match) this.completeTask(match);
+    if (match) this.completeTask(match, p);
 
     this.persist();
   }
@@ -2109,8 +2256,10 @@ export class GameRoom extends DurableObject<Env> {
       stats: g.stats, sprintStats: g.sprintStats,
       players: this.publicPlayers(), backlog: g.backlog.slice(0, 6),
       services: g.services, nodes: g.nodes,
-      // the retro needs the full causal ledger — only ship it at game end
-      ...(g.phase === 'ended' ? { events: g.events, analysis: g.analysis } : {}),
+      // retros (sprint review + game end) need the causal ledger; analysis
+      // ships every phase change so stale sprint analyses get cleared
+      analysis: g.analysis,
+      ...(g.phase === 'ended' || g.phase === 'review' ? { events: g.events } : {}),
     });
   }
 

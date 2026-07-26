@@ -180,3 +180,33 @@ input[type="range"]::-moz-range-thumb {
 .animate-shake { animation: dt-shake 0.22s ease-in-out; }
 
 .transition-bar { transition: width 1s linear; }
+
+/* role intro cards: the role icon bobs gently */
+@keyframes dt-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+.animate-float { animation: dt-float 2.6s ease-in-out infinite; }
+
+/* ops pager sense: a warm glow on the tab that needs help */
+@keyframes dt-pulse-warn {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--dt-warn) 55%, transparent); }
+  50% { box-shadow: 0 0 0 5px transparent; }
+}
+.animate-pulse-warn { animation: dt-pulse-warn 1.6s ease-in-out infinite; }
+
+/* end-of-sprint celebration: emoji confetti raining down (drift set inline) */
+@keyframes dt-confetti {
+  0% { transform: translateY(-6vh) translateX(0) rotate(0deg); opacity: 0; }
+  8% { opacity: 1; }
+  100% { transform: translateY(106vh) translateX(var(--drift, 0px)) rotate(520deg); opacity: 0.85; }
+}
+.animate-confetti { animation: dt-confetti 3s linear both; }
+
+/* sprint grade stamp: slams in oversized, settles with a slight tilt */
+@keyframes dt-stamp {
+  0% { transform: scale(2.4) rotate(8deg); opacity: 0; }
+  55% { transform: scale(0.94) rotate(-4deg); opacity: 1; }
+  100% { transform: scale(1) rotate(-3deg); opacity: 1; }
+}
+.animate-stamp { animation: dt-stamp 0.5s cubic-bezier(0.2, 1.4, 0.4, 1) 0.25s both; }

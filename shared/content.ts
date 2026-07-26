@@ -2,7 +2,7 @@
 
 import type {
   ControlDef, ControlType, DesignColor, IncidentDef, IncidentKind,
-  LogTemplate, ModeDef, ModeId, PlayerRole, Role, TriageTicket,
+  LogTemplate, ModeDef, ModeId, PlayerRole, Role, Task, TriageTicket,
 } from './types.ts';
 
 export const ROLES: Role[] = ['pm', 'designer', 'engineer', 'ops'];
@@ -14,6 +14,55 @@ export const ROLE_META: Record<PlayerRole, { label: string; icon: string; color:
   ops:       { label: 'Ops / SRE',       icon: '🛰️', color: '#34d399' },
   spectator: { label: 'Spectator',       icon: '📺', color: '#94a3b8' },
 };
+
+// ---------------------------------------------------------------------------
+// Role intros & perks. Shown as animated cards when picking a role in the
+// lobby; each perk maps to a real in-game lens the client renders for that
+// role. Anyone can do any task — the perks (plus ROLE_BONUS) are the edge.
+// ---------------------------------------------------------------------------
+
+export interface RolePerk { icon: string; title: string; desc: string }
+
+export const ROLE_INTRO: Record<Role, { tagline: string; perks: [RolePerk, RolePerk, RolePerk] }> = {
+  pm: {
+    tagline: 'Sees the whole board. Puts the right work in the right hands.',
+    perks: [
+      { icon: '📌', title: 'Runs the board', desc: 'Reassign any live task from the kanban board to whoever should own it.' },
+      { icon: '🌈', title: 'Role lens', desc: 'Board cards are color-coded by the role that fits the work best.' },
+      { icon: '⭐', title: 'Product instinct', desc: 'On ticket-triage calls, the right product decision is quietly marked for you.' },
+    ],
+  },
+  designer: {
+    tagline: 'Pixel-perfect eyes. Nothing misaligned gets past you.',
+    perks: [
+      { icon: '📐', title: 'Comparison tools', desc: 'Design QA gets pro aids: split swatch compare, alignment grids, radius ghosts.' },
+      { icon: '🎨', title: 'Designer’s eye', desc: 'The correct option on design reviews carries your subtle 🎨 mark.' },
+      { icon: '🧲', title: 'Design magnet', desc: 'Design QA lands on your screen first — and pays a role bonus when you clear it.' },
+    ],
+  },
+  engineer: {
+    tagline: 'Reads code like prose. Smells broken architecture from a tab away.',
+    perks: [
+      { icon: '🐞', title: 'Bug lens', desc: 'In code review, the buggy line carries a little 🐞 only you can see.' },
+      { icon: '🏗️', title: 'Architecture sense', desc: 'On the infra map, failing services are highlighted with the dial that fixes them.' },
+      { icon: '🧲', title: 'Code magnet', desc: 'Code reviews land on your screen first, and you hold the critical infra controls.' },
+    ],
+  },
+  ops: {
+    tagline: 'Feels the pager before it fires. Knows where the fire is.',
+    perks: [
+      { icon: '⭐', title: 'Triage instinct', desc: 'On support tickets, the right priority call is quietly marked for you.' },
+      { icon: '📡', title: 'Pager sense', desc: 'The tab that needs help glows for you — incidents, dying services, drowning teammates.' },
+      { icon: '🧲', title: 'Ticket magnet', desc: 'Triage lands on your screen first — and pays a role bonus when you route it.' },
+    ],
+  },
+};
+
+// Extra points when the player who clears a task matches its natural role.
+export const ROLE_BONUS = 25;
+
+// which role a task kind naturally belongs to (dial tasks map via their control)
+export const KIND_ROLE: Record<string, Role> = { code: 'engineer', triage: 'ops', design: 'designer' };
 
 export const REGIONS = ['us-east', 'eu-west', 'ap-south'];
 
@@ -163,6 +212,20 @@ export const CONTROL_POOL: ControlDef[] = [
   { key: 'clear_cache',     label: 'Flush the Cache',        type: 'button', role: 'ops' },
   { key: 'vpn',             label: 'Office VPN',             type: 'toggle', role: 'ops' },
 ];
+
+// control key → the role that owns that console, for role-match lookups
+export const CONTROL_ROLE: Record<string, Role> = Object.fromEntries(
+  [...CRITICAL_CONTROLS, ...CONTROL_POOL].map((d) => [d.key, d.role]),
+);
+
+// The role a task naturally belongs to: quiz kinds map directly, dial
+// missions map through the control they target. Drives the PM's role lens
+// on the board and the server's role-match bonus.
+export function taskNaturalRole(task: Pick<Task, 'kind'> & { controlKey?: string }): Role | null {
+  if (KIND_ROLE[task.kind]) return KIND_ROLE[task.kind];
+  if (task.controlKey) return CONTROL_ROLE[task.controlKey] ?? null;
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Task flavor. Epic features unlock services when shipped.

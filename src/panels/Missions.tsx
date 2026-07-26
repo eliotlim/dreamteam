@@ -95,7 +95,9 @@ function MissionCard({ task, now }: { task: DialTask; now: number }) {
       <Card className={cx(SLOT_H, 'p-3.5 flex flex-col justify-between border-ok bg-ok-soft/50')}>
         <div className="flex items-center justify-between gap-2">
           <Badge tone="ok">✓ {task.kind === 'bug' ? 'FIXED' : 'SHIPPED'}</Badge>
-          <span className="text-xs font-bold text-ok">+{task.points}</span>
+          <span className="text-xs font-bold text-ok">
+            +{task.points}{task.roleBonus ? <span className="text-accent" title="role bonus"> ⚡+{task.roleBonus}</span> : null}
+          </span>
         </div>
         <div className="min-h-0">
           <div className="text-xs text-subtle truncate" title={task.title}>{task.title}</div>
@@ -107,13 +109,20 @@ function MissionCard({ task, now }: { task: DialTask; now: number }) {
   }
 
   return (
-    <Card className={cx(SLOT_H, 'p-3.5 flex flex-col justify-between animate-pop', t.urgent && 'border-danger/50')}>
+    <Card className={cx(
+      SLOT_H, 'p-3.5 flex flex-col justify-between animate-pop',
+      t.urgent && 'border-danger/50', task.escalation && 'border-warn/60',
+    )}>
       <div className="flex items-center justify-between gap-2">
-        <Badge tone={meta.tone}>{meta.icon} {meta.label}{task.epicService ? ' · EPIC' : ''}</Badge>
+        <Badge tone={task.escalation ? 'warn' : meta.tone}>
+          {task.escalation ? '🦠 ESCALATED' : <>{meta.icon} {meta.label}{task.epicService ? ' · EPIC' : ''}</>}
+        </Badge>
         <TimeLeft {...t} />
       </div>
       <div className="min-h-0">
-        {task.locHint ? (
+        {task.causeNote ? (
+          <div className="text-[11px] font-medium text-warn truncate" title={task.causeNote}>⚠️ {task.causeNote}</div>
+        ) : task.locHint ? (
           <div className="text-[11px] font-medium text-accent truncate">
             {task.locHint === 'you'
               ? '🎛️ psst — this dial is on YOUR console'
@@ -154,20 +163,25 @@ function CodeMissionCard({ task, now, isEngineer }: { task: CodeTask; now: numbe
     )}>
       <div className="flex items-center justify-between gap-2">
         <Badge tone={task.celebrate ? 'ok' : 'info'}>
-          {task.celebrate ? `✓ SHIPPED · +${task.points}` : <>👨‍💻 {meta.label}{task.epicService ? ' · EPIC' : ''}</>}
+          {task.celebrate
+            ? `✓ SHIPPED · +${task.points}${task.roleBonus ? ` ⚡+${task.roleBonus}` : ''}`
+            : <>👨‍💻 {meta.label}{task.epicService ? ' · EPIC' : ''}</>}
         </Badge>
         {!task.celebrate && <TimeLeft {...t} />}
       </div>
       <div>
         <div className="text-[15px] font-semibold leading-snug">{meta.icon} {task.title}</div>
+        {task.causeNote && !task.celebrate && (
+          <div className="text-[11px] font-medium text-warn truncate" title={task.causeNote}>⚠️ {task.causeNote}</div>
+        )}
         <div className="text-xs text-subtle mt-0.5">
           {task.celebrate
             ? <span className="text-ok font-medium">Clean build in prod ✓</span>
             : task.patched
             ? <span className="text-ok font-medium">Patched ✓ — ship it!</span>
             : isEngineer && task.bugLine < 0
-              ? <span className="text-ok font-medium">Your 🔍 lens sees nothing wrong — ship it as-is</span>
-              : <>Tap anything broken, then ship{isEngineer && <span className="text-accent font-medium"> — your 🔍 lens marks bugs</span>}</>}
+              ? <span className="text-ok font-medium">Your 🐞 lens sees nothing wrong — ship it as-is</span>
+              : <>Tap anything broken, then ship{isEngineer && <span className="text-accent font-medium"> — your 🐞 lens marks bugs</span>}</>}
         </div>
       </div>
       <div className="rounded-lg bg-raised border border-line overflow-x-auto">
@@ -191,7 +205,7 @@ function CodeMissionCard({ task, now, isEngineer }: { task: CodeTask; now: numbe
                 <span className={cx('text-ink', fixed && 'text-ok')}>{ln}</span>
                 {fixed && <span className="ml-auto pl-2 text-[10px] select-none">✅</span>}
                 {isEngineer && !task.patched && i === task.bugLine && (
-                  <span className="ml-auto pl-2 text-[10px] opacity-70 select-none" title="engineer lens">🐛</span>
+                  <span className="ml-auto pl-2 text-[10px] opacity-70 select-none" title="engineer lens">🐞</span>
                 )}
               </button>
             );
@@ -212,9 +226,12 @@ function CodeMissionCard({ task, now, isEngineer }: { task: CodeTask; now: numbe
   );
 }
 
-// Ticket triage — route it to the right priority. Triage is ops turf: ops
-// gets an instinct marker on the right call.
-function TriageMissionCard({ task, now, isOps }: { task: TriageTask; now: number; isOps: boolean }) {
+// Ticket triage — route it to the right priority. Triage is ops turf, but
+// product calls are PM turf too: both get an instinct marker on the right
+// call (ops reads the pager, the PM reads the customer).
+function TriageMissionCard({ task, now, instinct }: {
+  task: TriageTask; now: number; instinct: 'ops' | 'pm' | null;
+}) {
   const [wrong, flash] = useWrongFlash();
   const t = timeInfo(task.createdAt, task.deadlineAt, now);
 
@@ -232,7 +249,9 @@ function TriageMissionCard({ task, now, isOps }: { task: TriageTask; now: number
     )}>
       <div className="flex items-center justify-between gap-2">
         <Badge tone={task.celebrate ? 'ok' : task.triageKind === 'bug' ? 'warn' : 'accent'}>
-          {task.celebrate ? `✓ ROUTED · +${task.points}` : <>📥 {task.triageKind === 'bug' ? 'TRIAGE · BUG REPORT' : 'TRIAGE · REQUEST'}</>}
+          {task.celebrate
+            ? `✓ ROUTED · +${task.points}${task.roleBonus ? ` ⚡+${task.roleBonus}` : ''}`
+            : <>📥 {task.triageKind === 'bug' ? 'TRIAGE · BUG REPORT' : 'TRIAGE · REQUEST'}</>}
         </Badge>
         {!task.celebrate && <TimeLeft {...t} />}
       </div>
@@ -242,7 +261,11 @@ function TriageMissionCard({ task, now, isOps }: { task: TriageTask; now: number
       <div className="text-xs text-subtle">
         {task.celebrate
           ? <span className="text-ok font-medium">Nice call ✓</span>
-          : <>Route it{isOps && <span className="text-accent font-medium"> — your ⭐ ops instinct marks the call</span>}</>}
+          : <>Route it{instinct && (
+              <span className="text-accent font-medium">
+                {instinct === 'ops' ? ' — your ⭐ ops instinct marks the call' : ' — your ⭐ product instinct marks the call'}
+              </span>
+            )}</>}
       </div>
       <div className="grid grid-cols-2 gap-1.5">
         {task.options.map((opt, i) => (
@@ -264,7 +287,9 @@ function TriageMissionCard({ task, now, isOps }: { task: TriageTask; now: number
             {task.celebrate && i === task.answer && (
               <span className="absolute -top-1.5 -right-1.5 size-5 rounded-full bg-ok text-white text-[11px] flex items-center justify-center">✓</span>
             )}
-            {!task.celebrate && isOps && i === task.answer && <span className="ml-1 text-[10px] opacity-70" title="ops instinct">⭐</span>}
+            {!task.celebrate && instinct && i === task.answer && (
+              <span className="ml-1 text-[10px] opacity-70" title={instinct === 'ops' ? 'ops instinct' : 'product instinct'}>⭐</span>
+            )}
           </button>
         ))}
       </div>
@@ -280,7 +305,9 @@ const DESIGN_META: Record<DesignTask['designKind'], { label: string }> = {
 };
 
 // Design review: visual QA — match the brand swatch, spot the dead-centered
-// dot, or match the border radius. Designers get an eye marker on the answer.
+// dot, or match the border radius. Designers get an eye marker on the answer
+// AND pro comparison tools: split-swatch compare, alignment crosshairs, and
+// a ghost outline of the target radius.
 function DesignMissionCard({ task, now, isDesigner }: { task: DesignTask; now: number; isDesigner: boolean }) {
   const [wrong, flash] = useWrongFlash();
   const meta = DESIGN_META[task.designKind] || DESIGN_META.shade;
@@ -323,14 +350,16 @@ function DesignMissionCard({ task, now, isDesigner }: { task: DesignTask; now: n
     )}>
       <div className="flex items-center justify-between gap-2">
         <Badge tone={task.celebrate ? 'ok' : 'accent'}>
-          {task.celebrate ? `✓ APPROVED · +${task.points}` : <>🎨 {meta.label}</>}
+          {task.celebrate
+            ? `✓ APPROVED · +${task.points}${task.roleBonus ? ` ⚡+${task.roleBonus}` : ''}`
+            : <>🎨 {meta.label}</>}
         </Badge>
         {!task.celebrate && <TimeLeft {...t} />}
       </div>
       <div className="text-xs text-subtle">
         {task.celebrate
           ? <span className="text-ok font-medium">Pixel perfect ✓</span>
-          : <>{task.instr}{isDesigner && <span className="text-accent font-medium"> — your 🎨 eye marks it</span>}</>}
+          : <>{task.instr}{isDesigner && <span className="text-accent font-medium"> — your 🎨 eye + 📐 compare tools are on</span>}</>}
       </div>
       {task.designKind === 'shade' && (
         <div className="flex items-center gap-2">
@@ -339,15 +368,41 @@ function DesignMissionCard({ task, now, isDesigner }: { task: DesignTask; now: n
         </div>
       )}
       <div className="grid grid-cols-2 gap-1.5">
-        {task.designKind === 'shade' && task.options.map((opt, i) => optionBox(i, null, { background: opt }))}
+        {/* designer aid (shade): each option is split against the brand swatch —
+            on the true match, the seam disappears */}
+        {task.designKind === 'shade' && task.options.map((opt, i) => optionBox(i, (
+          isDesigner ? (
+            <span
+              className="absolute inset-y-0 left-0 w-1/2 rounded-l-lg pointer-events-none"
+              style={{ background: task.prompt.swatch }}
+              title="left: brand · right: this option"
+            />
+          ) : null
+        ), { background: opt }))}
+        {/* designer aid (centered): alignment crosshairs in every card */}
         {task.designKind === 'centered' && task.options.map(([x, y], i) => optionBox(i, (
-          <span
-            className="absolute size-2.5 rounded-full bg-accent"
-            style={{ left: `calc(50% + ${x}px)`, top: `calc(50% + ${y}px)`, transform: 'translate(-50%, -50%)' }}
-          />
+          <>
+            {isDesigner && (
+              <>
+                <span className="absolute left-0 right-0 top-1/2 h-px bg-accent/25 pointer-events-none" />
+                <span className="absolute top-0 bottom-0 left-1/2 w-px bg-accent/25 pointer-events-none" />
+              </>
+            )}
+            <span
+              className="absolute size-2.5 rounded-full bg-accent"
+              style={{ left: `calc(50% + ${x}px)`, top: `calc(50% + ${y}px)`, transform: 'translate(-50%, -50%)' }}
+            />
+          </>
         ), { background: 'var(--dt-raised)' }))}
-        {task.designKind === 'radius' && task.options.map((opt, i) =>
-          optionBox(i, null, { background: 'var(--dt-raised)', borderRadius: opt }))}
+        {/* designer aid (radius): a dashed ghost of the target radius to trace */}
+        {task.designKind === 'radius' && task.options.map((opt, i) => optionBox(i, (
+          isDesigner ? (
+            <span
+              className="absolute inset-0 border-2 border-dashed border-accent/40 pointer-events-none"
+              style={{ borderRadius: task.prompt.radius }}
+            />
+          ) : null
+        ), { background: 'var(--dt-raised)', borderRadius: opt }))}
       </div>
       <PenaltyFooter t={t} tone="accent" wrongGuesses={task.wrongGuesses} celebrate={task.celebrate} />
     </Card>
@@ -423,7 +478,10 @@ export default function Missions() {
         const t = mine[i];
         if (!t) return <Skeleton key={`slot-${i}`} className={SLOT_H} label="waiting for work…" />;
         if (t.kind === 'code') return <CodeMissionCard key={t.id} task={t} now={now} isEngineer={me?.role === 'engineer'} />;
-        if (t.kind === 'triage') return <TriageMissionCard key={t.id} task={t} now={now} isOps={me?.role === 'ops'} />;
+        if (t.kind === 'triage') {
+          const instinct = me?.role === 'ops' ? 'ops' : me?.role === 'pm' ? 'pm' : null;
+          return <TriageMissionCard key={t.id} task={t} now={now} instinct={instinct} />;
+        }
         if (t.kind === 'design') return <DesignMissionCard key={t.id} task={t} now={now} isDesigner={me?.role === 'designer'} />;
         return <MissionCard key={t.id} task={t} now={now} />;
       })}

@@ -86,9 +86,10 @@ export function handleMessage(msg: ServerMsg) {
         players: msg.players, backlog: msg.backlog,
         services: msg.services ?? g.services, nodes: msg.nodes ?? g.nodes,
       });
-      // game end ships the causal ledger + failure analysis for the retro
+      // retros (sprint review + game end) ship the causal ledger; analysis
+      // arrives every phase change (null clears a stale sprint analysis)
       if (msg.events) g.events = msg.events;
-      if (msg.analysis) g.analysis = msg.analysis;
+      if ('analysis' in msg) g.analysis = msg.analysis ?? null;
       // sprint boundaries invalidate live work; a fresh game (sprint 1)
       // also invalidates the previous game's telemetry
       if (msg.phase === 'playing' || msg.phase === 'review') { g.tasks = []; g.incident = null; }

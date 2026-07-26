@@ -19,6 +19,8 @@ const STATUS_STYLE: Record<NodeStatus, { dot: string; border: string }> = {
 type ServiceFlowNode = Node<{
   label: string; icon: string; status: NodeStatus;
   stat?: string; selected: boolean; mine: number;
+  /** engineer architecture lens: this node is a problem worth staring at */
+  lens: boolean;
 }, 'service'>;
 
 function ServiceNode({ data }: NodeProps<ServiceFlowNode>) {
@@ -30,12 +32,16 @@ function ServiceNode({ data }: NodeProps<ServiceFlowNode>) {
         'hover:shadow-md hover:border-accent/60',
         st.border, data.status === 'down' && 'bg-danger-soft',
         data.selected && 'ring-2 ring-accent border-accent',
+        data.lens && 'animate-pulse-danger',
       )}
     >
       <Handle type="target" position={Position.Left} className="!bg-transparent !border-0 !size-1" />
       <div className="flex items-center gap-1.5">
         <span className={cx('size-2 rounded-full shrink-0', st.dot)} />
         <span className="text-xs font-semibold text-ink truncate">{data.icon} {data.label}</span>
+        {data.lens && (
+          <span className="text-[9px] shrink-0" title="engineer lens: something is wrong here">🔧</span>
+        )}
         {data.mine > 0 && (
           <span className="ml-auto text-[9px] font-bold text-accent shrink-0" title="you hold controls for this">🎛️{data.mine}</span>
         )}
@@ -135,6 +141,9 @@ export default function Infra({ full = false }: { full?: boolean }) {
   const services = g.services || [];
   const nodes = g.nodes || {};
   const me = s.you ? g.players[s.you] : undefined;
+  // engineer architecture lens: failing nodes shout, and the bad-services
+  // list names the dial that operates them (and who holds it)
+  const engLens = me?.role === 'engineer';
   const selected = sel && services.includes(sel) ? sel : null;
 
   const flowNodes = useMemo<ServiceFlowNode[]>(() => {
@@ -145,20 +154,22 @@ export default function Infra({ full = false }: { full?: boolean }) {
       const mine = (SERVICE_CONTROLS[id] || []).filter(
         (k) => me?.controls?.some((c) => c.key === k),
       ).length;
+      const status = nodes[id]?.s || 'ok';
       return {
         id,
         type: 'service' as const,
         position: { x: TIER_X[def.tier], y: tierIdx * 92 + (def.tier === 2 ? 46 : 0) },
         data: {
           label: def.label, icon: def.icon,
-          status: nodes[id]?.s || 'ok', stat: nodes[id]?.v,
+          status, stat: nodes[id]?.v,
           selected: selected === id, mine,
+          lens: engLens && status !== 'ok',
         },
         draggable: false, connectable: false,
       };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [services, nodes, selected, me?.controls]);
+  }, [services, nodes, selected, me?.controls, engLens]);
 
   const flowEdges = useMemo(() =>
     SERVICE_EDGES
@@ -223,16 +234,36 @@ export default function Infra({ full = false }: { full?: boolean }) {
           </div>
         ) : (
           <div className="space-y-1.5">
-            {bad.map((id) => (
-              <button key={id} onClick={() => setSel(id)}
-                className="w-full flex items-center justify-between text-sm cursor-pointer hover:bg-raised rounded-lg px-1.5 py-0.5 -mx-1.5">
-                <span className="font-medium">{SERVICES[id].icon} {SERVICES[id].label}</span>
-                <span className="flex items-center gap-2">
-                  <span className="text-xs font-mono text-subtle">{nodes[id]?.v}</span>
-                  <Badge tone={nodes[id].s === 'down' ? 'danger' : 'warn'}>{nodes[id].s}</Badge>
-                </span>
-              </button>
-            ))}
+            {bad.map((id) => {
+              // engineer lens: name the dials that operate this service and
+              // who is holding them — the fix path, not just the symptom
+              const fixers = engLens
+                ? (SERVICE_CONTROLS[id] || []).flatMap((k) => {
+                    for (const p of Object.values(g.players)) {
+                      const c = p.controls?.find((c) => c.key === k);
+                      if (c && p.connected) return [{ label: c.label, who: p.id === s.you ? 'you' : p.name }];
+                    }
+                    return [];
+                  })
+                : [];
+              return (
+                <button key={id} onClick={() => setSel(id)}
+                  className="w-full text-left cursor-pointer hover:bg-raised rounded-lg px-1.5 py-0.5 -mx-1.5">
+                  <span className="flex items-center justify-between text-sm">
+                    <span className="font-medium">{SERVICES[id].icon} {SERVICES[id].label}</span>
+                    <span className="flex items-center gap-2">
+                      <span className="text-xs font-mono text-subtle">{nodes[id]?.v}</span>
+                      <Badge tone={nodes[id].s === 'down' ? 'danger' : 'warn'}>{nodes[id].s}</Badge>
+                    </span>
+                  </span>
+                  {fixers.length > 0 && (
+                    <span className="block text-[11px] text-accent mt-0.5">
+                      🔧 your lens: {fixers.map((f) => `${f.label} (${f.who})`).join(' · ')}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
             <div className="text-[11px] text-faint px-1.5 pt-0.5">tap a service (here or on the map) to open its controls</div>
           </div>
         )}

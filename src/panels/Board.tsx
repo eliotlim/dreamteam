@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import type { ReactNode } from 'react';
-import { ROLE_META } from '../../shared/content.ts';
+import type { CSSProperties, ReactNode } from 'react';
+import { ROLE_META, ROLES, taskNaturalRole } from '../../shared/content.ts';
 import type { Player, Task } from '../../shared/types.ts';
 import { Badge, Avatar, Progress, SectionLabel, cx } from '../components/ui.tsx';
 import { useNow } from '../lib/hooks.ts';
@@ -9,15 +9,12 @@ import { reassignTask } from '../lib/net.ts';
 
 const KIND_ICON: Record<string, string> = { feature: '✨', bug: '🐛', incident: '🚨', code: '👨‍💻', triage: '📥', design: '🎨' };
 
-// which role a task kind naturally belongs to — the reassign menu leads with them
-const KIND_ROLE: Record<string, Player['role']> = { code: 'engineer', triage: 'ops', design: 'designer' };
-
 // PM-only reassign menu: tap a teammate to move the task to their screen.
 // Role-matched teammates are suggested first with a star.
 function AssignMenu({ task, players, onDone }: {
   task: Task; players: Player[]; onDone: () => void;
 }) {
-  const suggested = KIND_ROLE[task.kind];
+  const suggested = taskNaturalRole(task);
   const candidates = players
     .filter((p) => p.connected && p.role !== 'spectator' && p.id !== task.displayPid)
     .sort((a, b) => Number(b.role === suggested) - Number(a.role === suggested));
@@ -45,9 +42,11 @@ function AssignMenu({ task, players, onDone }: {
   );
 }
 
-function BoardCard({ children, className }: { children?: ReactNode; className?: string }) {
+function BoardCard({ children, className, style, title }: {
+  children?: ReactNode; className?: string; style?: CSSProperties; title?: string;
+}) {
   return (
-    <div className={cx('bg-surface border border-line rounded-xl p-2.5 text-xs space-y-1.5', className)}>
+    <div className={cx('bg-surface border border-line rounded-xl p-2.5 text-xs space-y-1.5', className)} style={style} title={title}>
       {children}
     </div>
   );
@@ -73,6 +72,8 @@ export default function Board() {
   const me = s.you ? players[s.you] : undefined;
   // the PM runs the board (host as fallback so someone always can)
   const canAssign = g.phase === 'playing' && !!me && me.role !== 'spectator' && (me.role === 'pm' || me.isHost);
+  // PM role lens: cards get color-coded by the role that fits the work
+  const pmLens = me?.role === 'pm';
   const [assigning, setAssigning] = useState<string | null>(null);
 
   // celebrating ghosts are already in doneLog — don't double-list them
@@ -82,7 +83,19 @@ export default function Board() {
   const failed = finished.filter((t) => t.status !== 'done').slice(0, 8);
 
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 h-full content-start">
+    <div className="space-y-3 h-full">
+    {pmLens && (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-subtle px-1">
+        <span className="font-semibold">🌈 PM lens — card color = best-fit role:</span>
+        {ROLES.map((r) => (
+          <span key={r} className="inline-flex items-center gap-1">
+            <span className="size-2 rounded-full" style={{ background: ROLE_META[r].color }} />
+            {ROLE_META[r].label}
+          </span>
+        ))}
+      </div>
+    )}
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 content-start">
       <Column title="Backlog" count={g.backlog?.length ?? 0}>
         {(g.backlog || []).map((f) => (
           <BoardCard key={f.title} className="opacity-70">
@@ -107,10 +120,22 @@ export default function Board() {
         {active.map((t) => {
           const pct = ((t.deadlineAt - now) / (t.deadlineAt - t.createdAt)) * 100;
           const display = players[t.displayPid];
+          const natural = pmLens ? taskNaturalRole(t) : null;
+          const lensStyle: CSSProperties | undefined = natural
+            ? { borderLeftWidth: 3, borderLeftColor: ROLE_META[natural].color }
+            : undefined;
           return (
-            <BoardCard key={t.id}>
+            <BoardCard key={t.id} style={lensStyle}
+              title={natural ? `best fit: ${ROLE_META[natural].label}` : undefined}>
               <div className="flex items-start justify-between gap-1.5">
-                <span className="font-medium leading-snug">{KIND_ICON[t.kind]} {t.title}</span>
+                <span className="font-medium leading-snug">
+                  {KIND_ICON[t.kind]} {t.title}
+                  {natural && display?.role !== natural && (
+                    <span className="ml-1 text-[10px] opacity-80" title={`a ${ROLE_META[natural].label} would do this best — consider reassigning`}>
+                      {ROLE_META[natural].icon}💭
+                    </span>
+                  )}
+                </span>
                 {canAssign ? (
                   <button
                     onClick={() => setAssigning(assigning === t.id ? null : t.id)}
@@ -154,6 +179,7 @@ export default function Board() {
           </BoardCard>
         ))}
       </Column>
+    </div>
     </div>
   );
 }

@@ -157,6 +157,14 @@ interface TaskBase {
   epicService?: string | null;
   wrongGuesses?: number;
   why?: string | null;
+  /** cascade cue shown on the card ("fallout — we missed this fix once") */
+  causeNote?: string | null;
+  /** this task IS a consequence — never cascades again */
+  escalation?: boolean;
+  /** ledger event id this task's resolution should nest under */
+  causeEv?: string | null;
+  /** set on completion when the clearing player matched the task's role */
+  roleBonus?: number;
   /** client-only: ghost of a completed task shown during the success linger */
   celebrate?: boolean;
 }
@@ -252,12 +260,14 @@ export interface Sim {
 export interface SprintStats {
   shipped: number; bugsFixed: number; incidentsResolved: number;
   triaged: number; missed: number; bugsShipped: number;
+  wrongGuesses?: number; roleMatches?: number;
   scoreStart: number; scoreDelta?: number;
 }
 
 export interface GameStats {
   shipped: number; bugsFixed: number; incidentsResolved: number;
   triaged: number; missed: number; bugsShipped: number; wrongGuesses: number;
+  roleMatches?: number;
   sprints: ({ sprint: number } & SprintStats)[];
 }
 
@@ -329,7 +339,7 @@ export interface GameState extends GameCore {
   password: string | null;
   creatorPid: string | null;
   sim: Sim;
-  openEv: { sprint: string | null; incident: string | null; crash: string | null; badDeploy: string | null };
+  openEv: { sprint: string | null; incident: string | null; crash: string | null; badDeploy: string | null; escalation: string | null };
   usedSnippets: string[];
   usedTickets: string[];
   nextTaskAt: number;

@@ -1,16 +1,57 @@
 import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
-import { ROLE_META, INCIDENTS, INCIDENT_LABELS, SERVICES, MODES, CONTROL_POOL } from '../../shared/content.ts';
-import type { IncidentKind, ModeId, PlayerRole } from '../../shared/types.ts';
 import {
-  Button, Card, Badge, Avatar, Switch, Seg, ThemeToggle, SectionLabel, Dot, Input, cx,
+  ROLE_META, ROLE_INTRO, ROLE_BONUS, ROLES, INCIDENTS, INCIDENT_LABELS, SERVICES, MODES, CONTROL_POOL,
+} from '../../shared/content.ts';
+import type { IncidentKind, ModeId, Role } from '../../shared/types.ts';
+import {
+  Button, Card, Badge, Avatar, Switch, Seg, ThemeToggle, SectionLabel, Dot, Input, Overlay, cx,
 } from '../components/ui.tsx';
+import { Rise } from '../components/retro.tsx';
 import {
   setRole, setConfig, startGame, startTutorial, renameSelf, setRoomName, setPassword, makeHost, leaveTeam,
 } from '../lib/net.ts';
 import { useStore } from '../lib/store.ts';
 
-const ROLE_CHOICES: PlayerRole[] = ['pm', 'designer', 'engineer', 'ops', 'spectator'];
+// Animated role intro: big icon, tagline, and the role's three perk cards
+// rising in one after another — shown whenever a role is picked or peeked.
+function RoleIntroOverlay({ role, onClose }: { role: Role; onClose: () => void }) {
+  const meta = ROLE_META[role];
+  const intro = ROLE_INTRO[role];
+  return (
+    <Overlay>
+      <Card className="overflow-hidden">
+        <div
+          className="px-6 pt-8 pb-6 text-center"
+          style={{ background: `color-mix(in srgb, ${meta.color} 14%, transparent)` }}
+        >
+          <div className="text-6xl animate-pop inline-block animate-float">{meta.icon}</div>
+          <h2 className="text-2xl font-bold mt-2">{meta.label}</h2>
+          <p className="text-sm text-subtle mt-1">{intro.tagline}</p>
+        </div>
+        <div className="p-5 space-y-3">
+          {intro.perks.map((perk, i) => (
+            <Rise key={perk.title} delay={0.15 + i * 0.22}>
+              <div className="flex gap-3 items-start bg-raised border border-line rounded-xl px-3.5 py-3">
+                <span className="text-2xl leading-none pt-0.5">{perk.icon}</span>
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold">{perk.title}</div>
+                  <div className="text-xs text-subtle mt-0.5 leading-relaxed">{perk.desc}</div>
+                </div>
+              </div>
+            </Rise>
+          ))}
+          <Rise delay={0.85}>
+            <p className="text-[11px] text-faint text-center pt-1">
+              Anyone can take any task — but clearing work in your lane pays a +{ROLE_BONUS} pt role bonus.
+            </p>
+            <Button className="w-full mt-2" onClick={onClose}>Let's go</Button>
+          </Rise>
+        </div>
+      </Card>
+    </Overlay>
+  );
+}
 
 const PRESET_BLURB: Record<string, string> = {
   chill: 'Slow pace, forgiving deadlines, 5 starting services.',
@@ -120,6 +161,7 @@ export default function Lobby() {
   const [renaming, setRenaming] = useState(false);
   const [roomName, setRoomNameLocal] = useState(g.name || '');
   const [qr, setQr] = useState<string | null>(null);
+  const [introRole, setIntroRole] = useState<Role | null>(null);
 
   useEffect(() => { setRoomNameLocal(g.name || ''); }, [g.name]);
 
@@ -146,6 +188,7 @@ export default function Lobby() {
 
   return (
     <div className="min-h-full flex flex-col">
+      {introRole && <RoleIntroOverlay role={introRole} onClose={() => setIntroRole(null)} />}
       <header className="flex items-center justify-between px-5 py-4 max-w-5xl w-full mx-auto">
         <div className="flex items-center gap-2 font-bold text-lg">🚀 {g.name || 'DreamTeam'}</div>
         <div className="flex items-center gap-2">
@@ -244,25 +287,47 @@ export default function Lobby() {
 
             <div className="pt-2 border-t border-line space-y-2">
               <SectionLabel>Your role</SectionLabel>
-              <div className="flex flex-wrap gap-1.5">
-                {ROLE_CHOICES.map((r) => (
-                  <button
-                    key={r}
-                    onClick={() => setRole(r)}
-                    className={cx(
-                      'px-3 py-2 rounded-xl text-sm font-medium border transition cursor-pointer',
-                      me?.role === r
-                        ? 'border-accent bg-accent-soft text-accent'
-                        : 'border-line text-subtle hover:text-ink hover:bg-raised',
-                    )}
-                  >
-                    {ROLE_META[r].icon} {ROLE_META[r].label}
-                  </button>
-                ))}
+              <div className="grid grid-cols-2 gap-2">
+                {ROLES.map((r, i) => {
+                  const active = me?.role === r;
+                  return (
+                    <button
+                      key={r}
+                      onClick={() => { setRole(r); setIntroRole(r); }}
+                      style={active ? { borderColor: ROLE_META[r].color } : undefined}
+                      className={cx(
+                        'text-left px-3 py-2.5 rounded-xl border transition cursor-pointer animate-rise',
+                        active ? 'bg-accent-soft/60 shadow-sm' : 'border-line hover:bg-raised hover:border-line-strong',
+                      )}
+                    >
+                      <span className="flex items-center gap-2">
+                        <span className={cx('text-2xl leading-none', active && 'animate-float')} style={{ animationDelay: `${i * 0.3}s` }}>
+                          {ROLE_META[r].icon}
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block text-sm font-semibold truncate">{ROLE_META[r].label}</span>
+                          <span className="block text-[11px] text-subtle truncate">{ROLE_INTRO[r].tagline}</span>
+                        </span>
+                      </span>
+                      <span className="flex items-center gap-1.5 mt-1.5 text-[11px] text-faint">
+                        {ROLE_INTRO[r].perks.map((perk) => <span key={perk.title} title={`${perk.title} — ${perk.desc}`}>{perk.icon}</span>)}
+                        <span className="ml-auto text-[10px] font-medium text-accent">{active ? 'your role · view perks' : 'perks →'}</span>
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
-              <p className="text-xs text-faint">
-                Spectator gets a dashboard for the projector — no controls, all the drama.
-              </p>
+              <button
+                onClick={() => setRole('spectator')}
+                className={cx(
+                  'w-full px-3 py-2 rounded-xl text-xs font-medium border transition cursor-pointer text-left',
+                  me?.role === 'spectator'
+                    ? 'border-accent bg-accent-soft text-accent'
+                    : 'border-line text-subtle hover:text-ink hover:bg-raised',
+                )}
+              >
+                📺 Spectate — a dashboard for the projector. No controls, all the drama.
+              </button>
             </div>
           </Card>
 
